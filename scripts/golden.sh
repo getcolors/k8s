@@ -64,6 +64,9 @@ if awk '/hcloud server create-image/{capture=1} capture{print} capture && /"\$bu
   echo 'golden: create-image uses an output flag unsupported by hcloud' >&2; exit 1
 fi
 grep -q -- '--label colors-package=k8s' "$image"
+grep -q 'talos_version_label=${talos_version//./-}' "$image"
+grep -q 'talos_version_label.*replace("v1.13.7", ".", "-")' "$infra"
+grep -q 'talos-version=${local.talos_version_label}' "$infra"
 bootstrap="$base/k8s-bootstrap/create.sh"
 for pin in 1.20.0 1.34.0 2.22.1 1.21.1 v1.21.1 v2.9.3; do
   grep -q "$pin" "$bootstrap" || { echo "golden: missing component pin $pin" >&2; exit 1; }

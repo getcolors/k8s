@@ -4,8 +4,9 @@ umask 077
 
 profile='k8s-fixture'
 talos_version='v1.13.7'
+talos_version_label=${talos_version//./-}
 location='fsn1'
-selector="colors-package=k8s,colors-profile=${profile},talos-version=${talos_version}"
+selector="colors-package=k8s,colors-profile=${profile},talos-version=${talos_version_label}"
 
 if hcloud image list --selector "$selector" -o json \
     | jq -e 'any(.[]; .status == "available")' >/dev/null; then
@@ -74,7 +75,7 @@ hcloud server create-image --type snapshot \
   --description "Talos ${talos_version} (${schematic}) for Colors ${profile}" \
   --label colors-package=k8s \
   --label "colors-profile=$profile" \
-  --label "talos-version=$talos_version" \
+  --label "talos-version=$talos_version_label" \
   --label "talos-schematic=$schematic" \
   "$builder" >/dev/null
 image_id=$(hcloud image list --selector "$selector" -o json \
