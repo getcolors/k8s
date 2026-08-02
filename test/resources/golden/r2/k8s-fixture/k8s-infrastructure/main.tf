@@ -133,6 +133,12 @@ resource "hcloud_firewall" "control_plane" {
   rule {
     direction  = "in"
     protocol   = "tcp"
+    port       = "50001"
+    source_ips = [local.private_cidr]
+  }
+  rule {
+    direction  = "in"
+    protocol   = "tcp"
     port       = "6443"
     source_ips = ["203.0.113.10/32", local.private_cidr]
   }

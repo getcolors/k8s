@@ -49,6 +49,7 @@ grep -q 'enable_public_interface = false' "$infra"
 grep -q 'port       = "51871"' "$infra"
 grep -q 'port       = "8472"' "$infra"
 grep -q 'port       = "2379-2380"' "$infra"
+grep -q 'port       = "50001"' "$infra"
 grep -q '203.0.113.10/32' "$infra"
 if grep -q '0.0.0.0/0' "$infra"; then
   echo 'golden: a node firewall is open to the world' >&2; exit 1

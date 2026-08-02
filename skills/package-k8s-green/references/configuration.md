@@ -42,7 +42,7 @@ The API hostname resolves to a private HA load balancer for cluster nodes.
 `hcloud-node-subnet-cidr` must be contained by `hcloud-network-cidr` and provide
 at least 32 addresses; API and node addresses are derived from that subnet.
 Public control-plane ports 50000 and 6443 accept only `admin-cidr`. Cluster-only
-rules cover etcd, kubelet, Cilium health, VXLAN and WireGuard. The public ingress
+rules cover Talos trust on 50001, etcd, kubelet, Cilium health, VXLAN and WireGuard. The public ingress
 LB sends 80/443 to Cilium NodePorts 32080/32443 over the private network.
 
 ExternalDNS is restricted to `cloudflare-zone` and `upsert-only`. cert-manager
