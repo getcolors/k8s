@@ -76,7 +76,8 @@ hcloud server create-image --type snapshot \
   --label colors-package=k8s \
   --label "colors-profile=$profile" \
   --label "talos-version=$talos_version_label" \
-  --label "talos-schematic=$schematic" \
+  --label "talos-schematic-a=${schematic:0:32}" \
+  --label "talos-schematic-b=${schematic:32:32}" \
   "$builder" >/dev/null
 image_id=$(hcloud image list --selector "$selector" -o json \
   | jq -er 'sort_by(.created) | last | .id')

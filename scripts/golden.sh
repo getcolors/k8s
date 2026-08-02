@@ -64,6 +64,12 @@ if awk '/hcloud server create-image/{capture=1} capture{print} capture && /"\$bu
   echo 'golden: create-image uses an output flag unsupported by hcloud' >&2; exit 1
 fi
 grep -q -- '--label colors-package=k8s' "$image"
+grep -q -- '--label "talos-schematic-a=${schematic:0:32}"' "$image"
+grep -q -- '--label "talos-schematic-b=${schematic:32:32}"' "$image"
+if grep -q -- '--label "talos-schematic=$schematic"' "$image"; then
+  echo 'golden: the 64-character schematic exceeds Hetzner label limits' >&2; exit 1
+fi
+grep -q 'talos_schematic.*talos-schematic-a.*talos-schematic-b' "$infra"
 grep -q 'talos_version_label=${talos_version//./-}' "$image"
 grep -q 'talos_version_label.*replace("v1.13.7", ".", "-")' "$infra"
 grep -q 'talos-version=${local.talos_version_label}' "$infra"

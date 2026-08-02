@@ -29,7 +29,8 @@ locals {
   worker_private_ips        = [for i in range(3) : cidrhost(local.private_cidr, 20 + i)]
   talos_version_label       = replace("v1.13.7", ".", "-")
   image_selector            = "colors-package=k8s,colors-profile=k8s-fixture,talos-version=${local.talos_version_label}"
-  installer_image           = "factory.talos.dev/installer/${data.hcloud_image.talos.labels["talos-schematic"]}:v1.13.7"
+  talos_schematic           = "${data.hcloud_image.talos.labels["talos-schematic-a"]}${data.hcloud_image.talos.labels["talos-schematic-b"]}"
+  installer_image           = "factory.talos.dev/installer/${local.talos_schematic}:v1.13.7"
 }
 
 data "hcloud_image" "talos" {
