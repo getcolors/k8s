@@ -43,7 +43,12 @@ grep -q 'node_subnet_cidr.*10.0.1.0/24' "$infra"
 grep -q 'cidrhost(local.node_subnet_cidr, 5)' "$infra"
 grep -q 'cidrhost(local.node_subnet_cidr, 10 + i)' "$infra"
 grep -q 'cidrhost(local.node_subnet_cidr, 20 + i)' "$infra"
-grep -q '\${local.private_prefix_length}' "$infra"
+[ "$(grep -c 'dhcp      = true' "$infra")" -eq 2 ] || {
+  echo 'golden: Talos node roles must obtain Hetzner-compatible private routes through DHCP' >&2; exit 1
+}
+if grep -q 'private_prefix_length\|dhcp      = false' "$infra"; then
+  echo 'golden: static private interface configuration breaks Hetzner routed networking' >&2; exit 1
+fi
 if grep -Eq 'api_private_ip[[:space:]]+=[[:space:]]+"|private_ips[[:space:]]+=[^]]*"10\.' "$infra"; then
   echo 'golden: private node addresses are hard-coded instead of derived from the configured subnet' >&2; exit 1
 fi

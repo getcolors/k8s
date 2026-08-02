@@ -24,7 +24,6 @@ locals {
   cluster_name              = "k8s-fixture"
   private_cidr              = "10.0.0.0/16"
   node_subnet_cidr          = "10.0.1.0/24"
-  private_prefix_length     = split("/", local.node_subnet_cidr)[1]
   api_private_ip            = cidrhost(local.node_subnet_cidr, 5)
   control_plane_private_ips = [for i in range(3) : cidrhost(local.node_subnet_cidr, 10 + i)]
   worker_private_ips        = [for i in range(3) : cidrhost(local.node_subnet_cidr, 20 + i)]
@@ -397,8 +396,7 @@ data "talos_machine_configuration" "control_plane" {
       network = {
         interfaces = [{
           interface = "eth1"
-          dhcp      = false
-          addresses = ["${local.control_plane_private_ips[count.index]}/${local.private_prefix_length}"]
+          dhcp      = true
         }]
       }
     })
@@ -436,8 +434,7 @@ data "talos_machine_configuration" "worker" {
       network = {
         interfaces = [{
           interface = "eth1"
-          dhcp      = false
-          addresses = ["${local.worker_private_ips[count.index]}/${local.private_prefix_length}"]
+          dhcp      = true
         }]
       }
     })
