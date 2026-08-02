@@ -363,7 +363,7 @@ locals {
     machine = {
       install = { image = local.installer_image }
       kubelet = {
-        nodeIP = { validSubnets = [local.private_cidr] }
+        nodeIP = { validSubnets = [local.node_subnet_cidr] }
       }
     }
     cluster = {
