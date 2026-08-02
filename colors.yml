@@ -1,0 +1,69 @@
+# Desired state for the Talos Kubernetes deployment. Keep secret values in
+# .envrc.private as COLORS_PAR_* variables, never in this file.
+
+# Names generated work and remote state. Never export COLORS_PAR_PROFILE: an
+# environment overlay could redirect this project to another profile's state.
+profile: k8s-hetzner
+workdir: .colors
+
+provider-compute: hcloud
+provider-dns: cloudflare
+provider-backend: r2
+compute-prevent-destroy: true
+
+# Flux watches this public repository after it is created. The harmless marker
+# is installed with the Package Skill in the deployment repository.
+repository: https://github.com/getcolors/k8s-hetzner.git
+repository-branch: main
+repository-path: ./.agents/skills/package-k8s-green/fixtures/gitops
+
+# Exact stable component releases make repeated creates reproducible.
+talos-version: v1.13.7
+kubernetes-version: v1.36.3
+cilium-version: v1.20.0
+flux-version: v2.9.3
+hcloud-cloud-controller-manager-version: v1.34.0
+hcloud-csi-driver-version: v2.22.1
+external-dns-version: v0.21.0
+cert-manager-version: v1.21.1
+
+# --- Cluster topology -------------------------------------------------------
+
+cluster-name: k8s-hetzner
+hcloud-location: fsn1
+hcloud-control-plane-count: 3
+hcloud-control-plane-server-type: cx23
+hcloud-worker-count: 3
+hcloud-worker-server-type: cx23
+hcloud-api-load-balancer-type: lb11
+hcloud-ingress-load-balancer-type: lb11
+
+# Cluster traffic stays on the private network. Public Talos and Kubernetes API
+# access is restricted to this machine's public IPv4 address.
+hcloud-network-zone: eu-central
+hcloud-network-cidr: 10.0.0.0/16
+hcloud-node-subnet-cidr: 10.0.1.0/24
+admin-cidr: 130.61.79.89/32
+cilium-wireguard-enabled: true
+cilium-ingress-enabled: true
+
+# --- Public DNS and certificates -------------------------------------------
+
+cloudflare-zone: bigconfig.online
+kubernetes-api-hostname: api.k8s.bigconfig.online
+ingress-test-hostname: hello.k8s.bigconfig.online
+external-dns-policy: upsert-only
+external-dns-cloudflare-proxied: false
+letsencrypt-email: letsencrypt@ululi.it
+letsencrypt-environment: production
+
+# --- Health fixtures -------------------------------------------------------
+
+hello-world-enabled: true
+persistent-volume-test-enabled: true
+
+# --- Cloudflare R2 state backend -------------------------------------------
+
+# State is isolated by profile and stage within the existing shared bucket.
+r2-bucket: tofu-state-319271fed8bc6d2d9059362be1165f37-eu
+r2-endpoint: https://319271fed8bc6d2d9059362be1165f37.eu.r2.cloudflarestorage.com

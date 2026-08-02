@@ -1,0 +1,21 @@
+{:paths ["test/clj" "test/resources"]
+ :deps {io.github.getcolors/k8s {:local/root "."}}
+ :tasks
+ {test {:doc "Run unit tests under Babashka"
+        :requires ([clojure.test :as t]
+                   [io.github.getcolors.k8s.validate-test]
+                   [io.github.getcolors.k8s.tools-test]
+                   [io.github.getcolors.k8s.workflow-test]
+                   [io.github.getcolors.k8s.operator-test])
+        :task (let [{:keys [fail error]}
+                    (t/run-tests 'io.github.getcolors.k8s.validate-test
+                                 'io.github.getcolors.k8s.tools-test
+                                 'io.github.getcolors.k8s.workflow-test
+                                 'io.github.getcolors.k8s.operator-test)]
+                (System/exit (if (pos? (+ fail error)) 1 0)))}
+  golden {:doc "Render and diff committed golden output"
+          :task (shell "./scripts/golden.sh")}
+  golden:accept {:doc "Regenerate goldens after inspecting a fresh render"
+                 :task (shell "./scripts/golden.sh" "--accept")}
+  pin {:doc "Stamp the launcher after a clean pushed commit"
+       :task (load-file "tasks/pin.clj")}}}
