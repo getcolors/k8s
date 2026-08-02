@@ -366,9 +366,6 @@ locals {
         enabled   = true
         manifests = []
       }
-      etcd = {
-        advertisedSubnets = [local.private_cidr]
-      }
       apiServer = {
         certSANs = concat(
           ["<{ kubernetes-api-hostname }>", local.api_private_ip],
@@ -397,6 +394,9 @@ data "talos_machine_configuration" "control_plane" {
           addresses = ["${local.control_plane_private_ips[count.index]}/${local.private_prefix_length}"]
         }]
       }
+    })
+    cluster = merge(local.common_patch.cluster, {
+      etcd = { advertisedSubnets = [local.private_cidr] }
     })
   }))]
 }
