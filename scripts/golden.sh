@@ -35,6 +35,9 @@ done
 infra="$base/k8s-infrastructure/main.tf"
 grep -q 'resource "hcloud_server" "control_plane"' "$infra"
 grep -q 'resource "hcloud_server" "worker"' "$infra"
+[ "$(grep -c 'ignore_changes = \[location\]' "$infra")" -eq 2 ] || {
+  echo 'golden: both server roles must tolerate hcloud location state normalization' >&2; exit 1
+}
 grep -q 'cidrhost(local.private_cidr, 5)' "$infra"
 grep -q 'cidrhost(local.private_cidr, 10 + i)' "$infra"
 grep -q 'cidrhost(local.private_cidr, 20 + i)' "$infra"

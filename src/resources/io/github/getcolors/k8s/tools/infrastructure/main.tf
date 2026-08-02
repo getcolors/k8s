@@ -68,7 +68,12 @@ resource "hcloud_server" "control_plane" {
     "colors-profile" = "<{ profile }>"
     "node-role"      = "control-plane"
   }
-  lifecycle { prevent_destroy = <{ compute-prevent-destroy }> }
+  lifecycle {
+    prevent_destroy = <{ compute-prevent-destroy }>
+    # hcloud can omit configured location from state after a partially failed
+    # parallel create; retaining it would propose destructive replacements.
+    ignore_changes = [location]
+  }
 }
 
 resource "hcloud_server_network" "control_plane" {
@@ -96,7 +101,11 @@ resource "hcloud_server" "worker" {
     "colors-profile" = "<{ profile }>"
     "node-role"      = "worker"
   }
-  lifecycle { prevent_destroy = <{ compute-prevent-destroy }> }
+  lifecycle {
+    prevent_destroy = <{ compute-prevent-destroy }>
+    # See the control-plane server lifecycle above.
+    ignore_changes = [location]
+  }
 }
 
 resource "hcloud_server_network" "worker" {
