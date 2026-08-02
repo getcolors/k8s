@@ -22,11 +22,12 @@ provider "talos" {}
 
 locals {
   cluster_name              = "k8s-fixture"
-  private_cidr              = "10.0.1.0/24"
-  private_prefix_length     = split("/", local.private_cidr)[1]
-  api_private_ip            = cidrhost(local.private_cidr, 5)
-  control_plane_private_ips = [for i in range(3) : cidrhost(local.private_cidr, 10 + i)]
-  worker_private_ips        = [for i in range(3) : cidrhost(local.private_cidr, 20 + i)]
+  private_cidr              = "10.0.0.0/16"
+  node_subnet_cidr          = "10.0.1.0/24"
+  private_prefix_length     = split("/", local.node_subnet_cidr)[1]
+  api_private_ip            = cidrhost(local.node_subnet_cidr, 5)
+  control_plane_private_ips = [for i in range(3) : cidrhost(local.node_subnet_cidr, 10 + i)]
+  worker_private_ips        = [for i in range(3) : cidrhost(local.node_subnet_cidr, 20 + i)]
   talos_version_label       = replace("v1.13.7", ".", "-")
   image_selector            = "colors-package=k8s,colors-profile=k8s-fixture,talos-version=${local.talos_version_label}"
   talos_schematic           = "${data.hcloud_image.talos.labels["talos-schematic-a"]}${data.hcloud_image.talos.labels["talos-schematic-b"]}"
@@ -48,7 +49,7 @@ resource "hcloud_network_subnet" "nodes" {
   network_id   = hcloud_network.cluster.id
   type         = "cloud"
   network_zone = "eu-central"
-  ip_range     = local.private_cidr
+  ip_range     = local.node_subnet_cidr
   lifecycle { prevent_destroy = true }
 }
 
@@ -393,7 +394,6 @@ data "talos_machine_configuration" "control_plane" {
   config_patches = [yamlencode(merge(local.common_patch, {
     machine = merge(local.common_patch.machine, {
       nodeLabels = { "node.kubernetes.io/role" = "control-plane" }
-      nodeAddress = { validSubnets = [local.private_cidr] }
       network = {
         interfaces = [{
           interface = "eth1"

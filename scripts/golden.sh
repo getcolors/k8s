@@ -38,9 +38,11 @@ grep -q 'resource "hcloud_server" "worker"' "$infra"
 [ "$(grep -c 'ignore_changes = \[location\]' "$infra")" -eq 2 ] || {
   echo 'golden: both server roles must tolerate hcloud location state normalization' >&2; exit 1
 }
-grep -q 'cidrhost(local.private_cidr, 5)' "$infra"
-grep -q 'cidrhost(local.private_cidr, 10 + i)' "$infra"
-grep -q 'cidrhost(local.private_cidr, 20 + i)' "$infra"
+grep -q 'private_cidr.*10.0.0.0/16' "$infra"
+grep -q 'node_subnet_cidr.*10.0.1.0/24' "$infra"
+grep -q 'cidrhost(local.node_subnet_cidr, 5)' "$infra"
+grep -q 'cidrhost(local.node_subnet_cidr, 10 + i)' "$infra"
+grep -q 'cidrhost(local.node_subnet_cidr, 20 + i)' "$infra"
 grep -q '\${local.private_prefix_length}' "$infra"
 if grep -Eq 'api_private_ip[[:space:]]+=[[:space:]]+"|private_ips[[:space:]]+=[^]]*"10\.' "$infra"; then
   echo 'golden: private node addresses are hard-coded instead of derived from the configured subnet' >&2; exit 1
@@ -56,7 +58,6 @@ if grep -q '0.0.0.0/0' "$infra"; then
 fi
 grep -q 'sensitive = true' "$infra"
 grep -q 'advertisedSubnets = \[local.private_cidr\]' "$infra"
-grep -q 'nodeAddress = { validSubnets = \[local.private_cidr\] }' "$infra"
 grep -q 'output "worker_ipv4"' "$infra"
 grep -q 'k8s-fixture/k8s-infrastructure.tfstate' \
   "$tmp/r2/k8s-fixture/k8s-infrastructure/backend.tf.json"

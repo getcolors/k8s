@@ -22,11 +22,12 @@ provider "talos" {}
 
 locals {
   cluster_name              = "<{ cluster-name }>"
-  private_cidr              = "<{ hcloud-node-subnet-cidr }>"
-  private_prefix_length     = split("/", local.private_cidr)[1]
-  api_private_ip            = cidrhost(local.private_cidr, 5)
-  control_plane_private_ips = [for i in range(<{ hcloud-control-plane-count }>) : cidrhost(local.private_cidr, 10 + i)]
-  worker_private_ips        = [for i in range(<{ hcloud-worker-count }>) : cidrhost(local.private_cidr, 20 + i)]
+  private_cidr              = "<{ hcloud-network-cidr }>"
+  node_subnet_cidr          = "<{ hcloud-node-subnet-cidr }>"
+  private_prefix_length     = split("/", local.node_subnet_cidr)[1]
+  api_private_ip            = cidrhost(local.node_subnet_cidr, 5)
+  control_plane_private_ips = [for i in range(<{ hcloud-control-plane-count }>) : cidrhost(local.node_subnet_cidr, 10 + i)]
+  worker_private_ips        = [for i in range(<{ hcloud-worker-count }>) : cidrhost(local.node_subnet_cidr, 20 + i)]
   talos_version_label       = replace("<{ talos-version }>", ".", "-")
   image_selector            = "colors-package=k8s,colors-profile=<{ profile }>,talos-version=${local.talos_version_label}"
   talos_schematic           = "${data.hcloud_image.talos.labels["talos-schematic-a"]}${data.hcloud_image.talos.labels["talos-schematic-b"]}"
@@ -48,7 +49,7 @@ resource "hcloud_network_subnet" "nodes" {
   network_id   = hcloud_network.cluster.id
   type         = "cloud"
   network_zone = "<{ hcloud-network-zone }>"
-  ip_range     = local.private_cidr
+  ip_range     = local.node_subnet_cidr
   lifecycle { prevent_destroy = <{ compute-prevent-destroy }> }
 }
 
@@ -393,7 +394,6 @@ data "talos_machine_configuration" "control_plane" {
   config_patches = [yamlencode(merge(local.common_patch, {
     machine = merge(local.common_patch.machine, {
       nodeLabels = { "node.kubernetes.io/role" = "control-plane" }
-      nodeAddress = { validSubnets = [local.private_cidr] }
       network = {
         interfaces = [{
           interface = "eth1"
