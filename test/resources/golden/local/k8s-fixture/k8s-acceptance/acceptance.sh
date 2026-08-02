@@ -4,6 +4,9 @@ set -euo pipefail
 : "${KUBECONFIG:?KUBECONFIG is required}"
 : "${TALOSCONFIG:?TALOSCONFIG is required}"
 : "${EXPECTED_INGRESS_IPV4:?EXPECTED_INGRESS_IPV4 is required}"
+: "${TALOS_ENDPOINT:?TALOS_ENDPOINT is required}"
+: "${CONTROL_PLANE_NODES:?CONTROL_PLANE_NODES is required}"
+: "${WORKER_NODES:?WORKER_NODES is required}"
 
 kubectl wait node --all --for=condition=Ready --timeout=10m
 [ "$(kubectl get nodes -o name | wc -l)" -eq 6 ] || {
@@ -11,7 +14,10 @@ kubectl wait node --all --for=condition=Ready --timeout=10m
   exit 1
 }
 
-talosctl health --wait-timeout=10m
+talosctl health --endpoints "$TALOS_ENDPOINT" --nodes "$TALOS_ENDPOINT" \
+  --init-node "$TALOS_ENDPOINT" \
+  --control-plane-nodes "$CONTROL_PLANE_NODES" \
+  --worker-nodes "$WORKER_NODES" --wait-timeout=10m
 kubectl -n kube-system rollout status daemonset/cilium --timeout=10m
 kubectl -n kube-system rollout status deployment/cilium-operator --timeout=10m
 kubectl -n kube-system rollout status deployment/hcloud-cloud-controller-manager --timeout=10m

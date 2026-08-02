@@ -1,6 +1,7 @@
 (ns io.github.getcolors.k8s.tools
   "Package-owned Talos image, infrastructure, platform, and acceptance stages."
   (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [green.process :as process]
             [green.scaffold :as sc]
             [green.tofu :as tofu]
@@ -143,9 +144,14 @@
           rendered "acceptance"
           (process/run-with-timeout
            ["bash" (str (tool-dir opts acceptance-tool) "/acceptance.sh")]
-           {:extra-env (merge configs
-                              {"EXPECTED_INGRESS_IPV4"
-                               (str (get-in opts [:k8s/outputs :ingress_ipv4]))})}
+           {:extra-env (let [outputs (:k8s/outputs opts)
+                             control-planes (:control_plane_ipv4 outputs)
+                             workers (:worker_ipv4 outputs)]
+                         (merge configs
+                                {"EXPECTED_INGRESS_IPV4" (str (:ingress_ipv4 outputs))
+                                 "TALOS_ENDPOINT" (str (first control-planes))
+                                 "CONTROL_PLANE_NODES" (str/join "," control-planes)
+                                 "WORKER_NODES" (str/join "," workers)}))}
            (* 20 60 1000))))))))
 
 (defn generated-cleanup-step [opts]

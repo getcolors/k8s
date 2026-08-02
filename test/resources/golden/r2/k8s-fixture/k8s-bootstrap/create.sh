@@ -13,6 +13,19 @@ done
 
 dir=$(cd "$(dirname "$0")" && pwd)
 
+# Talos bootstrap returns before the highly available API necessarily accepts
+# connections. Wait here so a normal first create does not fail at the first
+# Helm command while the control plane is still converging.
+api_ready=0
+for _ in $(seq 1 120); do
+  if kubectl get --raw=/readyz --request-timeout=5s >/dev/null 2>&1; then
+    api_ready=1
+    break
+  fi
+  sleep 5
+done
+[ "$api_ready" = 1 ] || { echo 'Kubernetes API did not become ready' >&2; exit 1; }
+
 helm repo add cilium https://helm.cilium.io/ --force-update >/dev/null
 helm repo add hcloud https://charts.hetzner.cloud --force-update >/dev/null
 helm repo add external-dns https://kubernetes-sigs.github.io/external-dns/ --force-update >/dev/null

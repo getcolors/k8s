@@ -366,6 +366,9 @@ locals {
         enabled   = true
         manifests = []
       }
+      etcd = {
+        advertisedSubnets = [local.private_cidr]
+      }
       apiServer = {
         certSANs = concat(
           ["api.k8s.fixture.example", local.api_private_ip],
@@ -493,6 +496,9 @@ output "ingress_ipv4" {
 }
 output "control_plane_ipv4" {
   value = hcloud_server.control_plane[*].ipv4_address
+}
+output "worker_ipv4" {
+  value = hcloud_server.worker[*].ipv4_address
 }
 output "control_plane_private_ips" {
   value = local.control_plane_private_ips

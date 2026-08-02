@@ -54,6 +54,8 @@ if grep -q '0.0.0.0/0' "$infra"; then
   echo 'golden: a node firewall is open to the world' >&2; exit 1
 fi
 grep -q 'sensitive = true' "$infra"
+grep -q 'advertisedSubnets = \[local.private_cidr\]' "$infra"
+grep -q 'output "worker_ipv4"' "$infra"
 grep -q 'k8s-fixture/k8s-infrastructure.tfstate' \
   "$tmp/r2/k8s-fixture/k8s-infrastructure/backend.tf.json"
 image="$base/k8s-image/create.sh"
@@ -82,11 +84,15 @@ for pin in 1.20.0 1.34.0 2.22.1 1.21.1 v1.21.1 v2.9.3; do
 done
 grep -q 'env.HCLOUD_TOKEN' "$bootstrap"
 grep -q 'env.CLOUDFLARE_API_TOKEN' "$bootstrap"
+grep -q 'kubectl get --raw=/readyz' "$bootstrap"
 grep -q 'type: wireguard' "$base/k8s-bootstrap/cilium-values.yaml"
 grep -q 'kind: ClusterIssuer' "$base/k8s-bootstrap/platform.yaml"
 grep -q 'kind: PersistentVolumeClaim' "$base/k8s-bootstrap/platform.yaml"
 grep -q 'path: "./gitops"' "$base/k8s-bootstrap/gitops.yaml"
-grep -q 'exactly six Kubernetes nodes' "$base/k8s-acceptance/acceptance.sh"
+acceptance="$base/k8s-acceptance/acceptance.sh"
+grep -q 'exactly six Kubernetes nodes' "$acceptance"
+grep -q -- '--control-plane-nodes "$CONTROL_PLANE_NODES"' "$acceptance"
+grep -q -- '--worker-nodes "$WORKER_NODES"' "$acceptance"
 if rg -q 'client-certificate-data|client-key-data|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|REPLACE_ME|github_pat_|ghp_' "$tmp"; then
   echo 'golden: credential-shaped material was rendered' >&2; exit 1
 fi
