@@ -70,13 +70,15 @@ done
   exit 1
 }
 
-image_id=$(hcloud server create-image --type snapshot \
+hcloud server create-image --type snapshot \
   --description "Talos ${talos_version} (${schematic}) for Colors ${profile}" \
-  "$builder" -o json | jq -er '.image.id')
-hcloud image add-label "$image_id" colors-package=k8s
-hcloud image add-label "$image_id" "colors-profile=$profile"
-hcloud image add-label "$image_id" "talos-version=$talos_version"
-hcloud image add-label "$image_id" "talos-schematic=$schematic"
+  --label colors-package=k8s \
+  --label "colors-profile=$profile" \
+  --label "talos-version=$talos_version" \
+  --label "talos-schematic=$schematic" \
+  "$builder" >/dev/null
+image_id=$(hcloud image list --selector "$selector" -o json \
+  | jq -er 'sort_by(.created) | last | .id')
 
 for _ in $(seq 1 180); do
   [ "$(hcloud image describe "$image_id" -o json | jq -r '.status')" = available ] && exit 0

@@ -59,6 +59,11 @@ grep -q 'xz -t nocloud-amd64.raw.xz' "$image"
 if grep -q '\.sha256' "$image"; then
   echo 'golden: image stage uses the enterprise-only Factory checksum endpoint' >&2; exit 1
 fi
+if awk '/hcloud server create-image/{capture=1} capture{print} capture && /"\$builder"/{exit}' "$image" \
+    | grep -q -- '-o json'; then
+  echo 'golden: create-image uses an output flag unsupported by hcloud' >&2; exit 1
+fi
+grep -q -- '--label colors-package=k8s' "$image"
 bootstrap="$base/k8s-bootstrap/create.sh"
 for pin in 1.20.0 1.34.0 2.22.1 1.21.1 v1.21.1 v2.9.3; do
   grep -q "$pin" "$bootstrap" || { echo "golden: missing component pin $pin" >&2; exit 1; }
