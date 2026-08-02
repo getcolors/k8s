@@ -56,6 +56,7 @@ if grep -q '0.0.0.0/0' "$infra"; then
 fi
 grep -q 'sensitive = true' "$infra"
 grep -q 'advertisedSubnets = \[local.private_cidr\]' "$infra"
+grep -q 'nodeAddress = { validSubnets = \[local.private_cidr\] }' "$infra"
 grep -q 'output "worker_ipv4"' "$infra"
 grep -q 'k8s-fixture/k8s-infrastructure.tfstate' \
   "$tmp/r2/k8s-fixture/k8s-infrastructure/backend.tf.json"

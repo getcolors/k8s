@@ -393,6 +393,7 @@ data "talos_machine_configuration" "control_plane" {
   config_patches = [yamlencode(merge(local.common_patch, {
     machine = merge(local.common_patch.machine, {
       nodeLabels = { "node.kubernetes.io/role" = "control-plane" }
+      nodeAddress = { validSubnets = [local.private_cidr] }
       network = {
         interfaces = [{
           interface = "eth1"
