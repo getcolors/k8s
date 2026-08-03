@@ -2,11 +2,14 @@
 - name: Prepare kubeadm nodes
   hosts: k8s_cluster
   become: true
-  gather_facts: true
+  gather_facts: false
   tasks:
     - name: Wait for SSH
       ansible.builtin.wait_for_connection:
         timeout: 300
+
+    - name: Gather facts after SSH is ready
+      ansible.builtin.setup:
 
     - name: Disable swap now
       ansible.builtin.command: swapoff -a
@@ -89,6 +92,12 @@
         name: "{{ item }}"
         selection: hold
       loop: [kubeadm, kubelet, kubectl]
+
+    - name: Create containerd configuration directory
+      ansible.builtin.file:
+        path: /etc/containerd
+        state: directory
+        mode: "0755"
 
     - name: Configure containerd with systemd cgroups
       ansible.builtin.copy:
