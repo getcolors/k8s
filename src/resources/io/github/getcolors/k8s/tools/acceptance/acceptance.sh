@@ -3,7 +3,7 @@ set -euo pipefail
 
 alias_name='<{ host-alias }>'
 host='<{ application-host }>'
-kubectl=(ssh -- "$alias_name" "sudo -n kubectl --kubeconfig=/etc/kubernetes/admin.conf")
+kubectl=(ssh -F "$HOME/.ssh/config" -- "$alias_name" "sudo -n kubectl --kubeconfig=/etc/kubernetes/admin.conf")
 
 "${kubectl[@]}" wait node --all --for=condition=Ready --timeout=10m
 [ "$("${kubectl[@]}" get nodes -o name | wc -l)" -eq 2 ] || {

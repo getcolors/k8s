@@ -8,9 +8,13 @@
     (.delete f) (.mkdirs f) (str f)))
 
 (deftest command-uses-ssh-and-remote-admin-kubeconfig
-  (is (= ["ssh" "--" "k8s-digitalocean"
-          "'sudo' '-n' 'kubectl' '--kubeconfig=/etc/kubernetes/admin.conf' 'get' 'nodes'"]
-         (operator/command {:profile "k8s-digitalocean"} ["get" "nodes"]))))
+  (let [command (operator/command {:profile "k8s-digitalocean"} ["get" "nodes"])]
+    (is (= "ssh" (first command)))
+    (is (= "-F" (second command)))
+    (is (str/ends-with? (nth command 2) "/.ssh/config"))
+    (is (= ["--" "k8s-digitalocean"
+            "'sudo' '-n' 'kubectl' '--kubeconfig=/etc/kubernetes/admin.conf' 'get' 'nodes'"]
+           (subvec command 3)))))
 
 (deftest arguments-are-shell-quoted
   (is (str/includes? (last (operator/command {:profile "p"}

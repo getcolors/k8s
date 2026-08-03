@@ -15,7 +15,8 @@
                               (concat ["sudo" "-n" "kubectl"
                                        "--kubeconfig=/etc/kubernetes/admin.conf"]
                                       args)))]
-    ["ssh" "--" (utils/host-alias opts) remote]))
+    ["ssh" "-F" (str (io/file (System/getProperty "user.home") ".ssh/config"))
+     "--" (utils/host-alias opts) remote]))
 
 (defn inherit-run [argv]
   (try
