@@ -76,15 +76,20 @@
   "Load node addresses from remote state without planning or changing cloud resources."
   [opts]
   (let [dir (tool-dir opts infrastructure-tool)
-        rendered (sc/scaffold (assoc opts :green/event :build)
-                              (infrastructure-specs opts))
-        env (merge (System/getenv) (credential-env opts :provider-compute))
+        rendered (assoc (sc/scaffold (assoc opts :green/event :build)
+                                     (infrastructure-specs opts))
+                        :green/event (:green/event opts))
+        env (merge (into {} (System/getenv))
+                   (credential-env opts :provider-compute))
         init (process/run ["tofu" (str "-chdir=" dir) "init"
                            "-input=false" "-no-color"] {:extra-env env})]
     (if-not (zero? (:exit init))
       (process-result rendered "infrastructure state initialization" init)
       (try
-        (merge rendered fallback-outputs (tofu/outputs dir env))
+        (let [outputs (tofu/outputs dir env)]
+          (merge rendered fallback-outputs outputs
+                 {:k8s/infrastructure-present?
+                  (contains? outputs :control_plane_public_ip)}))
         (catch Throwable t
           (assoc rendered :green/exit 1
                           :green/err (str "infrastructure state output failed: "
@@ -147,13 +152,16 @@
      (raw-spec (str dir "/inventory.json") (inventory data))]))
 
 (defn ansible-remote-step [opts]
-  (let [dir (tool-dir opts ansible-remote-tool)]
-    (ansible/ansible-with-spec
-     opts
-     {:dir dir :inventory "inventory.json"
-      :playbooks {:create "create.yml" :delete "delete.yml"}
-      :host-key-checking false}
-     (ansible-remote-specs opts))))
+  (if (and (= :delete (:green/event opts))
+           (false? (:k8s/infrastructure-present? opts)))
+    opts
+    (let [dir (tool-dir opts ansible-remote-tool)]
+      (ansible/ansible-with-spec
+       opts
+       {:dir dir :inventory "inventory.json"
+        :playbooks {:create "create.yml" :delete "delete.yml"}
+        :host-key-checking false}
+       (ansible-remote-specs opts)))))
 
 (defn acceptance-specs [opts]
   (let [dir (tool-dir opts acceptance-tool)]

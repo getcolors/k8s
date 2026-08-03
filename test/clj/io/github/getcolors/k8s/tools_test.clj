@@ -2,7 +2,10 @@
   (:require [cheshire.core :as json]
             [clojure.string :as str]
             [clojure.test :refer [deftest is]]
+            [green.ansible :as ansible]
+            [green.process :as process]
             [green.scaffold :as sc]
+            [green.tofu :as tofu]
             [io.github.getcolors.k8s.tools :as tools]
             [io.github.getcolors.k8s.validate-test :as vt]))
 
@@ -52,6 +55,23 @@
     (is (str/includes? play "COLORS_PAR_DO_TOKEN"))
     (is (str/includes? play "COLORS_PAR_CLOUDFLARE_API_TOKEN"))
     (is (not (str/includes? play "fixture-secret")))))
+
+(deftest load-infrastructure-accepts-the-system-environment
+  (let [opts (assoc vt/base :workdir (temp-dir) :green/event :delete)]
+    (with-redefs [sc/scaffold (fn [rendered _] rendered)
+                  process/run (fn [& _] {:exit 0})
+                  tofu/outputs (fn [& _] {:control_plane_public_ip "203.0.113.1"})]
+      (let [result (tools/load-infrastructure-step opts)]
+        (is (= :delete (:green/event result)))
+        (is (:k8s/infrastructure-present? result))
+        (is (= "203.0.113.1" (:control_plane_public_ip result)))))))
+
+(deftest repeated-delete-skips-remote-cleanup-after-nodes-are-gone
+  (let [opts (assoc vt/base :green/event :delete
+                    :k8s/infrastructure-present? false)]
+    (with-redefs [ansible/ansible-with-spec
+                  (fn [& _] (throw (ex-info "must not run" {})))]
+      (is (= opts (tools/ansible-remote-step opts))))))
 
 (deftest workdir-resolves-beside-state
   (is (= "/srv/project/.colors/p/k8s-infrastructure"
