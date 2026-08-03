@@ -50,7 +50,7 @@
 ;; cannot resolve its own library says so rather than inventing a SHA or
 ;; silently falling back to whatever is lying around. `bb pin` refuses to stamp
 ;; a dirty or unpushed HEAD for the same reason.
-(def ^:private k8s-sha "a52d47409ed0973d661ce118cab35527d727ef0b")
+(def ^:private k8s-sha "1980e4d40b2e2f54940d5d5735c700f36fd8af34")
 
 (def ^:private k8s-git-url "https://github.com/getcolors/k8s.git")
 (def ^:private green-git-url "https://github.com/getcolors/green.git")
