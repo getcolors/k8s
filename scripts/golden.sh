@@ -29,79 +29,47 @@ build local COLORS_PAR_PROVIDER_BACKEND=local
 build r2
 
 base="$tmp/local/k8s-fixture"
-for stage in k8s-image k8s-infrastructure k8s-bootstrap k8s-acceptance; do
+for stage in k8s-infrastructure k8s-ansible-local k8s-ansible-remote k8s-acceptance; do
   [ -d "$base/$stage" ] || { echo "golden: missing stage $stage" >&2; exit 1; }
 done
+
 infra="$base/k8s-infrastructure/main.tf"
-grep -q 'resource "hcloud_server" "control_plane"' "$infra"
-grep -q 'resource "hcloud_server" "worker"' "$infra"
-[ "$(grep -c 'ignore_changes = \[location\]' "$infra")" -eq 2 ] || {
-  echo 'golden: both server roles must tolerate hcloud location state normalization' >&2; exit 1
-}
-grep -q 'private_cidr.*10.0.0.0/16' "$infra"
-grep -q 'node_subnet_cidr.*10.0.1.0/24' "$infra"
-grep -q 'cidrhost(local.node_subnet_cidr, 5)' "$infra"
-grep -q 'cidrhost(local.node_subnet_cidr, 10 + i)' "$infra"
-grep -q 'cidrhost(local.node_subnet_cidr, 20 + i)' "$infra"
-[ "$(grep -c 'dhcp      = true' "$infra")" -eq 2 ] || {
-  echo 'golden: Talos node roles must obtain Hetzner-compatible private routes through DHCP' >&2; exit 1
-}
-if grep -q 'private_prefix_length\|dhcp      = false' "$infra"; then
-  echo 'golden: static private interface configuration breaks Hetzner routed networking' >&2; exit 1
-fi
-if grep -Eq 'api_private_ip[[:space:]]+=[[:space:]]+"|private_ips[[:space:]]+=[^]]*"10\.' "$infra"; then
-  echo 'golden: private node addresses are hard-coded instead of derived from the configured subnet' >&2; exit 1
-fi
-grep -q 'enable_public_interface = false' "$infra"
-grep -q 'port       = "51871"' "$infra"
-grep -q 'port       = "8472"' "$infra"
-grep -q 'port       = "2379-2380"' "$infra"
-grep -q 'port       = "50001"' "$infra"
+grep -q 'resource "digitalocean_vpc" "cluster"' "$infra"
+grep -q 'resource "digitalocean_droplet" "control_plane"' "$infra"
+grep -q 'resource "digitalocean_droplet" "worker"' "$infra"
+grep -q 'source_addresses = local.api_sources' "$infra"
 grep -q '203.0.113.10/32' "$infra"
-if grep -q '0.0.0.0/0' "$infra"; then
-  echo 'golden: a node firewall is open to the world' >&2; exit 1
+grep -q '10.20.0.0/20' "$infra"
+[ "$(grep -c 'prevent_destroy = true' "$infra")" -ge 5 ] || {
+  echo 'golden: deployment-owned infrastructure lost prevent_destroy' >&2; exit 1
+}
+if grep -q '0.0.0.0/0.*source' "$infra"; then
+  echo 'golden: node ingress is open to the world' >&2; exit 1
 fi
-grep -q 'sensitive = true' "$infra"
-grep -q 'advertisedSubnets = \[local.private_cidr\]' "$infra"
-grep -q 'output "worker_ipv4"' "$infra"
 grep -q 'k8s-fixture/k8s-infrastructure.tfstate' \
   "$tmp/r2/k8s-fixture/k8s-infrastructure/backend.tf.json"
-image="$base/k8s-image/create.sh"
-grep -q 'curl -fsSL -o nocloud-amd64.raw.xz' "$image"
-grep -q 'xz -t nocloud-amd64.raw.xz' "$image"
-if grep -q '\.sha256' "$image"; then
-  echo 'golden: image stage uses the enterprise-only Factory checksum endpoint' >&2; exit 1
-fi
-if awk '/hcloud server create-image/{capture=1} capture{print} capture && /"\$builder"/{exit}' "$image" \
-    | grep -q -- '-o json'; then
-  echo 'golden: create-image uses an output flag unsupported by hcloud' >&2; exit 1
-fi
-grep -q -- '--label colors-package=k8s' "$image"
-grep -q -- '--label "talos-schematic-a=${schematic:0:32}"' "$image"
-grep -q -- '--label "talos-schematic-b=${schematic:32:32}"' "$image"
-if grep -q -- '--label "talos-schematic=$schematic"' "$image"; then
-  echo 'golden: the 64-character schematic exceeds Hetzner label limits' >&2; exit 1
-fi
-grep -q 'talos_schematic.*talos-schematic-a.*talos-schematic-b' "$infra"
-grep -q 'talos_version_label=${talos_version//./-}' "$image"
-grep -q 'talos_version_label.*replace("v1.13.7", ".", "-")' "$infra"
-grep -q 'talos-version=${local.talos_version_label}' "$infra"
-bootstrap="$base/k8s-bootstrap/create.sh"
-for pin in 1.20.0 1.34.0 2.22.1 1.21.1 v1.21.1 v2.9.3; do
-  grep -q "$pin" "$bootstrap" || { echo "golden: missing component pin $pin" >&2; exit 1; }
+
+play="$base/k8s-ansible-remote/create.yml"
+for pin in v1.36.3 v0.28.8 v0.1.68 v2.9.3; do
+  grep -q "$pin" "$play" || { echo "golden: missing component pin $pin" >&2; exit 1; }
 done
-grep -q 'env.HCLOUD_TOKEN' "$bootstrap"
-grep -q 'env.CLOUDFLARE_API_TOKEN' "$bootstrap"
-grep -q 'kubectl get --raw=/readyz' "$bootstrap"
-grep -q 'type: wireguard' "$base/k8s-bootstrap/cilium-values.yaml"
-grep -q 'kind: ClusterIssuer' "$base/k8s-bootstrap/platform.yaml"
-grep -q 'kind: PersistentVolumeClaim' "$base/k8s-bootstrap/platform.yaml"
-grep -q 'path: "./gitops"' "$base/k8s-bootstrap/gitops.yaml"
+grep -q 'cloud-provider=external' "$play"
+grep -q -- '--iface=eth1' "$play"
+grep -q 'COLORS_PAR_DO_TOKEN' "$play"
+grep -q 'COLORS_PAR_CLOUDFLARE_API_TOKEN' "$play"
+grep -q 'no_log: true' "$play"
+grep -q 'path: "./clusters/k8s-digitalocean"' "$base/k8s-ansible-remote/gitops.yml"
+
+delete="$base/k8s-ansible-remote/delete.yml"
+grep -q 'delete service ingress-nginx-controller' "$delete"
+grep -q 'k8s/ansible-remote' <(cd "$root" && bb -e '(require (quote io.github.getcolors.k8s.workflow)) (print io.github.getcolors.k8s.workflow/side-effecting-steps)')
+
 acceptance="$base/k8s-acceptance/acceptance.sh"
-grep -q 'exactly six Kubernetes nodes' "$acceptance"
-grep -q -- '--control-plane-nodes "$CONTROL_PLANE_NODES"' "$acceptance"
-grep -q -- '--worker-nodes "$WORKER_NODES"' "$acceptance"
+grep -q 'expected exactly two Kubernetes nodes' "$acceptance"
+grep -q 'https://${host}/healthz' "$acceptance"
+
 if rg -q 'client-certificate-data|client-key-data|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|REPLACE_ME|github_pat_|ghp_' "$tmp"; then
   echo 'golden: credential-shaped material was rendered' >&2; exit 1
 fi
+
 echo 'all K8s goldens and safety assertions pass'

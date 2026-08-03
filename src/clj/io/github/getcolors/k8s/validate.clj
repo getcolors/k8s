@@ -1,22 +1,24 @@
 (ns io.github.getcolors.k8s.validate
-  "Credential-free desired-state rules and package-owned provider metadata."
+  "Credential-free kubeadm/DigitalOcean desired-state validation."
   (:require [clojure.string :as str]
             [green.cli :as green-cli]))
 
 (def providers
   {:provider-compute
-   {"hcloud" {:required [:hcloud-location :hcloud-network-zone
-                          :hcloud-network-cidr :hcloud-node-subnet-cidr
-                          :hcloud-control-plane-count :hcloud-control-plane-server-type
-                          :hcloud-worker-count :hcloud-worker-server-type
-                          :hcloud-api-load-balancer-type
-                          :hcloud-ingress-load-balancer-type]
-              :secrets [:hcloud-token]
-              :tofu-env {:hcloud-token "HCLOUD_TOKEN"}}}
+   {"digitalocean" {:required [:digitalocean-name :digitalocean-region
+                                :digitalocean-control-plane-size
+                                :digitalocean-worker-size :digitalocean-image
+                                :digitalocean-ssh-key-fingerprint
+                                :digitalocean-vpc-cidr
+                                :digitalocean-ssh-sources
+                                :digitalocean-api-sources]
+                    :secrets [:do-token]
+                    :tofu-env {:do-token "DIGITALOCEAN_TOKEN"}}}
    :provider-dns
-   {"cloudflare" {:required [:cloudflare-zone]
+   {"cloudflare" {:required [:cloudflare-zone :application-host]
                   :secrets [:cloudflare-api-token]
-                  :tofu-env {:cloudflare-api-token "CLOUDFLARE_API_TOKEN"}}}
+                  :tofu-env {}}
+    "no-infra" {:required [] :secrets [] :tofu-env {}}}
    :provider-backend
    {"local" {:required [] :secrets [] :tofu-env {}}
     "s3" {:required [:s3-bucket :s3-region]
@@ -38,8 +40,7 @@
 
 (defn entry [opts slot] (get-in providers [slot (get opts slot)]))
 (defn tofu-env [opts slot] (:tofu-env (entry opts slot) {}))
-(defn- slot-keys [opts selected field]
-  (mapcat #(get (entry opts %) field []) selected))
+(defn- slot-keys [opts field] (mapcat #(get (entry opts %) field []) slots))
 (defn- missing [opts ks] (keep #(when (placeholder? (get opts %)) %) ks))
 
 (defn env-errors [env]
@@ -47,16 +48,6 @@
     [(str profile-par " is set. K8s takes profile from colors.yml only; "
           "an environment overlay could redirect remote state.")]))
 
-(def version-keys
-  [:talos-version :kubernetes-version :cilium-version :flux-version
-   :hcloud-cloud-controller-manager-version :hcloud-csi-driver-version
-   :external-dns-version :cert-manager-version])
-(def required-keys
-  (concat [:profile :workdir :cluster-name :repository :repository-branch
-           :repository-path :admin-cidr :kubernetes-api-hostname
-           :ingress-test-hostname :external-dns-policy
-           :letsencrypt-email :letsencrypt-environment]
-          version-keys))
 (def ^:private semver-re #"^v[0-9]+\.[0-9]+\.[0-9]+$")
 (def ^:private https-git-re #"^https://[A-Za-z0-9._~-]+(?:/[A-Za-z0-9._~-]+)+(?:\.git)?$")
 (def ^:private dns-re #"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$")
@@ -70,53 +61,45 @@
        (every? #(<= 0 % 255)
                (map parse-long (str/split (first (str/split (str value) #"/")) #"\.")))))
 
-(defn- cidr-range [cidr]
-  (let [[address prefix-text] (str/split (str cidr) #"/")
-        prefix (parse-long prefix-text)
-        number (reduce #(+ (* %1 256) %2) 0
-                       (map parse-long (str/split address #"\.")))
-        size (long (Math/pow 2 (- 32 prefix)))
-        start (* (quot number size) size)]
-    {:start start :end (+ start size -1) :prefix prefix}))
-
-(defn- subnet-errors [opts]
-  (let [network (:hcloud-network-cidr opts)
-        subnet (:hcloud-node-subnet-cidr opts)]
-    (when (and (valid-cidr? network) (valid-cidr? subnet))
-      (let [outer (cidr-range network)
-            inner (cidr-range subnet)]
-        (concat
-         (when (or (< (:start inner) (:start outer))
-                   (> (:end inner) (:end outer)))
-           [":hcloud-node-subnet-cidr must be contained by :hcloud-network-cidr"])
-         (when (> (:prefix inner) 27)
-           [":hcloud-node-subnet-cidr must provide at least 32 addresses (/27 or larger)"]))))))
+(def required-keys
+  [:profile :workdir :kubernetes-distribution :kubernetes-version
+   :kubernetes-cni :flannel-version :kubernetes-pod-cidr
+   :kubernetes-service-cidr :flux-version
+   :digitalocean-cloud-controller-version :repository :repository-branch
+   :repository-path :control-plane-count :worker-count
+   :external-dns-owner-id :cert-manager-acme-environment])
 
 (defn state-errors [opts]
   (vec
    (concat
     (map #(str % " is required")
-         (missing opts (concat required-keys (slot-keys opts slots :required))))
+         (missing opts (concat required-keys (slot-keys opts :required))))
     (for [slot slots
           :let [provider (get opts slot)]
           :when (not (contains? (get providers slot) provider))]
       (str "unsupported " slot " " (pr-str provider)))
-    (when-not (= "hcloud" (:provider-compute opts))
-      [":provider-compute must be hcloud"])
-    (when-not (= "cloudflare" (:provider-dns opts))
-      [":provider-dns must be cloudflare"])
+    (when-not (= "digitalocean" (:provider-compute opts))
+      [":provider-compute must be digitalocean"])
+    (when-not (= "kubeadm" (:kubernetes-distribution opts))
+      [":kubernetes-distribution must be kubeadm"])
+    (when-not (= "flannel" (:kubernetes-cni opts))
+      [":kubernetes-cni must be flannel"])
+    (when-not (= 1 (:control-plane-count opts))
+      [":control-plane-count must be 1"])
+    (when-not (= 1 (:worker-count opts))
+      [":worker-count must be 1"])
+    (when-not (true? (:digitalocean-cloud-controller opts))
+      [":digitalocean-cloud-controller must be true"])
     (when-not (boolean? (:compute-prevent-destroy opts))
       [":compute-prevent-destroy must be true or false"])
     (when-not (or (placeholder? (:profile opts))
                   (re-matches profile-re (str (:profile opts))))
       [":profile must be a safe 1-63 character name"])
-    (when-not (= 3 (:hcloud-control-plane-count opts))
-      [":hcloud-control-plane-count must be 3"])
-    (when-not (= 3 (:hcloud-worker-count opts))
-      [":hcloud-worker-count must be 3"])
-    (for [k version-keys
+    (for [k [:kubernetes-version :flannel-version :flux-version
+             :digitalocean-cloud-controller-version]
           :let [v (get opts k)]
-          :when (and (not (placeholder? v)) (not (re-matches semver-re (str v))))]
+          :when (and (not (placeholder? v))
+                     (not (re-matches semver-re (str v))))]
       (str k " must be an exact vMAJOR.MINOR.PATCH release"))
     (when (and (not (placeholder? (:repository opts)))
                (not (re-matches https-git-re (str (:repository opts)))))
@@ -127,33 +110,38 @@
     (when-not (or (placeholder? (:repository-path opts))
                   (re-matches path-re (str (:repository-path opts))))
       [":repository-path must begin with ./"])
-    (for [k [:cloudflare-zone :kubernetes-api-hostname :ingress-test-hostname]
+    (for [k [:application-host :cloudflare-zone]
           :let [v (get opts k)]
-          :when (and (not (placeholder? v)) (not (re-matches dns-re (str v))))]
+          :when (and (= "cloudflare" (:provider-dns opts))
+                     (not (placeholder? v))
+                     (not (re-matches dns-re (str v))))]
       (str k " must be a DNS name"))
-    (for [k [:kubernetes-api-hostname :ingress-test-hostname]
-          :let [v (str (get opts k)) zone (str (:cloudflare-zone opts))]
-          :when (and (not (placeholder? v)) (not (placeholder? zone))
-                     (not (str/ends-with? v (str "." zone))))]
-      (str k " must be below :cloudflare-zone"))
-    (for [k [:hcloud-network-cidr :hcloud-node-subnet-cidr :admin-cidr]
+    (when (and (= "cloudflare" (:provider-dns opts))
+               (not (placeholder? (:application-host opts)))
+               (not (placeholder? (:cloudflare-zone opts)))
+               (not (str/ends-with? (str (:application-host opts))
+                                    (str "." (:cloudflare-zone opts)))))
+      [":application-host must be below :cloudflare-zone"])
+    (for [k [:kubernetes-pod-cidr :kubernetes-service-cidr
+             :digitalocean-vpc-cidr]
           :let [v (get opts k)]
           :when (and (not (placeholder? v)) (not (valid-cidr? v)))]
       (str k " must be a valid IPv4 CIDR"))
-    (subnet-errors opts)
-    (when-not (= "upsert-only" (:external-dns-policy opts))
-      [":external-dns-policy must be upsert-only"])
-    (when-not (boolean? (:external-dns-cloudflare-proxied opts))
-      [":external-dns-cloudflare-proxied must be true or false"])
-    (when-not (contains? #{"production" "staging"} (:letsencrypt-environment opts))
-      [":letsencrypt-environment must be production or staging"])
-    (for [k [:cilium-wireguard-enabled :cilium-ingress-enabled
-             :hello-world-enabled :persistent-volume-test-enabled]
-          :when (not (boolean? (get opts k)))]
-      (str k " must be true or false")))))
+    (for [k [:digitalocean-ssh-sources :digitalocean-api-sources]
+          :let [values (get opts k)]
+          :when (and (not (placeholder? values))
+                     (or (not (sequential? values))
+                         (empty? values)
+                         (some (complement valid-cidr?) values)))]
+      (str k " must be a non-empty list of IPv4 CIDRs"))
+    (when-not (contains? #{"production" "staging"}
+                         (:cert-manager-acme-environment opts))
+      [":cert-manager-acme-environment must be production or staging"]))))
 
 (defn secret-errors
   ([opts] (secret-errors opts slots))
   ([opts selected]
    (map #(str "required credential is not set: " (green-cli/par-name %))
-        (distinct (missing opts (slot-keys opts selected :secrets))))))
+        (distinct
+         (missing opts
+                  (mapcat #(get (entry opts %) :secrets []) selected))))))

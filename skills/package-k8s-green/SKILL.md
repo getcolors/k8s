@@ -1,24 +1,25 @@
 ---
 name: package-k8s-green
-description: Build and operate a six-node Talos Kubernetes cluster on Hetzner with Green, Cilium WireGuard/ingress, CCM/CSI, Flux, ExternalDNS, cert-manager, and acceptance.
+description: Build and operate a two-node kubeadm Kubernetes cluster on DigitalOcean with Green, Flannel, DigitalOcean CCM, Flux, ExternalDNS, cert-manager, and acceptance.
 license: MIT
 ---
 
-# Talos Kubernetes on Hetzner
+# kubeadm Kubernetes on DigitalOcean
 
 Read [references/configuration.md](references/configuration.md) before changing
-state or running a lifecycle command.
+desired state or running a lifecycle command.
 
 ## Safety
 
-- Keep secrets out of `colors.yml`; use gitignored `COLORS_PAR_*` exports.
+- Keep secrets out of `colors.yml`; use ignored `COLORS_PAR_*` exports.
 - Never set `COLORS_PAR_PROFILE` and never edit generated `.colors/` files.
 - Default to `build` and `create --dry-run`; real create/delete needs explicit
   authorization.
-- Keep `compute-prevent-destroy: true`. Lift it for one intentional delete with
+- Keep `compute-prevent-destroy: true`. Lift it for one authorized delete with
   `COLORS_PAR_COMPUTE_PREVENT_DESTROY=false`.
-- Do not copy kubeconfig or talosconfig. The operator commands create private
-  temporary files from remote state and erase them.
+- Restrict `digitalocean-ssh-sources` and `digitalocean-api-sources`; do not use
+  `0.0.0.0/0` for administrative access.
+- Do not copy `/etc/kubernetes/admin.conf`. `./green kubectl` uses it over SSH.
 
 ## Commands
 
@@ -27,13 +28,15 @@ state or running a lifecycle command.
 ./green create --dry-run
 ./green create
 ./green kubectl get nodes
-./green talosctl health
+./green kubectl get pods -A
 ./green delete
 ```
 
-A real create requires `hcloud`, `tofu`, `helm`, `kubectl`, `talosctl`, `curl`,
-`jq`, `xz`, and OpenSSH. The provided `devenv.nix` supplies them.
+A real lifecycle run requires Babashka, OpenTofu, Ansible, and SSH. The provided
+`devenv.nix` supplies them. Flux watches a public HTTPS repository and path.
+Ensure that path contains the controller/config/application reconciliation
+objects before provisioning.
 
-Flux watches a public HTTPS repository. Ensure `repository-path` exists and is
-a valid Kustomization before provisioning; acceptance requires the Flux source
-and Kustomization to become Ready.
+Delete first asks Kubernetes to remove the ingress LoadBalancer and waits for
+its service finalizer, then destroys only the deployment-owned Droplets,
+firewalls, and VPC.

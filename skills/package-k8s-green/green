@@ -1,5 +1,5 @@
 #!/usr/bin/env bb
-;; K8s launcher — a six-node Talos Kubernetes cluster.
+;; K8s launcher — a kubeadm Kubernetes cluster on DigitalOcean.
 ;;
 ;; Desired state lives in colors.yml, found by walking up from the working
 ;; directory. Secrets and tokens are never written there: every credential key
@@ -42,7 +42,7 @@
   "Minimum io.github.getcolors.k8s contract this launcher requires. Guarded at
   run time so a stale pin fails loudly instead of rendering templates from an
   older commit."
-  1)
+  2)
 
 ;; Managed by `bb pin` — do not edit by hand.
 ;;
@@ -159,13 +159,11 @@
   (str "Usage: green <build|create|delete> "
        "[-f|--file colors.yml] [--dry-run]\n"
        "       green kubectl <kubectl arguments>\n"
-       "       green talosctl <talosctl arguments>\n"
        "\n"
-       "  build      render the work directory only — contact nothing\n"
-       "  create     converge Talos, Cilium, controllers, Flux, and acceptance\n"
-       "  delete     destroy infrastructure and the package-owned Talos image\n"
-       "  kubectl    run kubectl with a temporary kubeconfig from remote state\n"
-       "  talosctl   run talosctl with a temporary talosconfig from remote state"))
+       "  build     render the work directory only — contact nothing\n"
+       "  create    converge kubeadm, Flannel, Flux, and the application\n"
+       "  delete    remove the Kubernetes load balancer, then infrastructure\n"
+       "  kubectl   invoke kubectl securely through control-plane SSH"))
 
 (defn run
   "REPL-friendly entry point that returns the final outcome map."
@@ -184,10 +182,10 @@
            @(requiring-resolve 'io.github.getcolors.k8s.workflow/workflow)
            (default-args args)))
 
-      (contains? #{"kubectl" "talosctl"} command)
+      (= "kubectl" command)
       (or (contract-error)
           ((requiring-resolve 'io.github.getcolors.k8s.operator/run)
-           (default-file) (keyword command) (subvec args 1)))
+           (default-file) :kubectl (subvec args 1)))
 
       :else {:green/exit 2 :green/err usage})))
 

@@ -8,12 +8,6 @@ fail(){ echo "launcher: FAIL — $*" >&2; exit 1; }
 ok(){ checks=$((checks+1)); echo "  ok — $*"; }
 
 [ -f "$launcher" ] || fail 'payload launcher is missing'
-fixture="$root/skills/package-k8s-green/fixtures/gitops"
-[ -f "$fixture/kustomization.yaml" ] || fail 'package-owned GitOps kustomization is missing'
-[ -f "$fixture/reconciliation-marker.yaml" ] || fail 'package-owned GitOps marker is missing'
-grep -q 'reconciliation-marker.yaml' "$fixture/kustomization.yaml" || fail 'GitOps marker is not in the package kustomization'
-grep -q 'namespace: flux-system' "$fixture/reconciliation-marker.yaml" || fail 'GitOps marker targets the wrong namespace'
-ok 'ships the package-owned Flux reconciliation fixture'
 grep -q 'io.github.getcolors.k8s.workflow/workflow' "$launcher" || fail 'workflow dispatch is missing'
 for bad in 'defn.*-step' 'tofu/' 'helm '; do
   ! grep -qE "$bad" "$launcher" || fail "launcher contains package logic: $bad"
@@ -45,11 +39,12 @@ ok 'finds colors.yml by walking upward'
 
 out=$(cd "$tmp/project" && K8S_LIB_ROOT="$root" ./green nonsense 2>&1 || true)
 grep -q Usage <<<"$out" || fail 'unknown command has no usage'
-for verb in build create delete kubectl talosctl; do
+for verb in build create delete kubectl; do
   grep -q "\"$verb\"" "$launcher" || fail "missing command $verb"
 done
+! grep -q '"talosctl" command' "$launcher" || fail 'Talos command remains dispatchable'
 grep -q 'io.github.getcolors.k8s.operator/run' "$launcher" || fail 'operator commands bypass tested code'
-ok 'lifecycle and temporary-credential operator commands are dispatchable'
+ok 'lifecycle and SSH-backed kubectl commands are dispatchable'
 
 [ -L "$root/green" ] && [ "$(readlink "$root/green")" = skills/package-k8s-green/green ] || fail 'root green is not the payload symlink'
 ok 'root launcher is the payload symlink'

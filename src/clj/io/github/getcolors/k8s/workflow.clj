@@ -1,5 +1,5 @@
 (ns io.github.getcolors.k8s.workflow
-  "Six-node Talos lifecycle DAG and package-specific remote-state advice."
+  "Two-node kubeadm lifecycle DAG and package-specific remote-state advice."
   (:require [clojure.string :as str]
             [green.cli :as green-cli]
             [green.dry-run :as dry-run]
@@ -11,22 +11,21 @@
 
 (def defaults
   {:compute-prevent-destroy true
-   :provider-compute "hcloud"
-   :provider-dns "cloudflare"
+   :provider-compute "digitalocean"
+   :provider-dns "no-infra"
    :provider-backend "local"
+   :kubernetes-distribution "kubeadm"
+   :kubernetes-cni "flannel"
+   :control-plane-count 1
+   :worker-count 1
+   :digitalocean-cloud-controller true
    :repository-branch "main"
-   :repository-path "./gitops"
-   :external-dns-policy "upsert-only"
-   :external-dns-cloudflare-proxied false
-   :cilium-wireguard-enabled true
-   :cilium-ingress-enabled true
-   :hello-world-enabled true
-   :persistent-volume-test-enabled true
+   :repository-path "./clusters/k8s-digitalocean"
+   :cert-manager-acme-environment "production"
    :workdir ".colors"})
 (def lifecycle-events #{:create :delete})
 
 (defn start-step
-  "Overlay credentials, validate all state, and guard real destruction."
   ([opts] (start-step opts (System/getenv)))
   ([opts env]
    (let [opts (green-cli/read-pars (merge defaults opts) env)
@@ -50,15 +49,17 @@
 (defn wire-fn [step run-opts]
   (if (= :delete (:green/event run-opts))
     (case step
-      :k8s/start [start-step :k8s/infrastructure]
-      :k8s/infrastructure [tools/infrastructure-step :k8s/image]
-      :k8s/image [tools/image-step :k8s/generated-cleanup]
+      :k8s/start [start-step :k8s/load-infrastructure]
+      :k8s/load-infrastructure [tools/load-infrastructure-step :k8s/ansible-remote]
+      :k8s/ansible-remote [tools/ansible-remote-step :k8s/ansible-local]
+      :k8s/ansible-local [tools/ansible-local-step :k8s/infrastructure]
+      :k8s/infrastructure [tools/infrastructure-step :k8s/generated-cleanup]
       :k8s/generated-cleanup [tools/generated-cleanup-step])
     (case step
-      :k8s/start [start-step :k8s/image]
-      :k8s/image [tools/image-step :k8s/infrastructure]
-      :k8s/infrastructure [tools/infrastructure-step :k8s/bootstrap]
-      :k8s/bootstrap [tools/bootstrap-step :k8s/acceptance]
+      :k8s/start [start-step :k8s/infrastructure]
+      :k8s/infrastructure [tools/infrastructure-step :k8s/ansible-local]
+      :k8s/ansible-local [tools/ansible-local-step :k8s/ansible-remote]
+      :k8s/ansible-remote [tools/ansible-remote-step :k8s/acceptance]
       :k8s/acceptance [tools/acceptance-step])))
 
 (defn backend-advice [tool]
@@ -77,11 +78,13 @@
                               :endpoint (:r2-endpoint %)))})))
 
 (def side-effecting-steps
-  [:k8s/image :k8s/infrastructure :k8s/bootstrap :k8s/acceptance
-   :k8s/generated-cleanup])
+  [:k8s/load-infrastructure :k8s/infrastructure :k8s/ansible-local
+   :k8s/ansible-remote :k8s/acceptance :k8s/generated-cleanup])
 
 (def workflow
   (-> (wf/workflow {:start :k8s/start :wire-fn wire-fn})
+      (wf/advice-add :k8s/load-infrastructure :before ::backend
+                     (backend-advice tools/infrastructure-tool))
       (wf/advice-add :k8s/infrastructure :before ::backend
                      (backend-advice tools/infrastructure-tool))
       progress/advise

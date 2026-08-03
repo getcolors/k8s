@@ -1,4 +1,0 @@
-replicaCount: 2
-networking:
-  enabled: true
-  clusterCIDR: "10.244.0.0/16"

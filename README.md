@@ -1,20 +1,15 @@
 # k8s
 
-A green-only Package Skill for a production-shaped six-node Talos Kubernetes
-cluster on Hetzner Cloud.
-
-It owns a pinned Talos snapshot; a private network; three control planes and
-three workers; private HA API and public ingress load balancers; restricted
-firewalls; Talos bootstrap; Cilium ingress with WireGuard; Hetzner CCM/CSI;
-Flux; ExternalDNS; cert-manager; hello-world/PVC health fixtures; and acceptance.
+A green-only Package Skill for a compact kubeadm Kubernetes cluster on
+DigitalOcean: one control plane, one worker, Flannel networking, DigitalOcean
+cloud-controller integration, Flux, DNS/TLS, and end-to-end acceptance.
 
 ```sh
-./green build                 # render .colors/<profile>; contact nothing
-./green create --dry-run      # walk the complete DAG; touch nothing
-./green create                # provision and converge (explicit authorization)
-./green kubectl get nodes     # temporary kubeconfig, erased on exit
-./green talosctl health       # temporary talosconfig, erased on exit
-./green delete                # protected by compute-prevent-destroy
+./green build
+./green create --dry-run
+./green create
+./green kubectl get nodes
+./green delete
 ```
 
 ## Install
@@ -25,23 +20,16 @@ cp .agents/skills/package-k8s-green/green green
 chmod +x green
 ```
 
-The root launcher is a copy in consumers; re-copy it after every skill update.
-Desired state is the flat, non-secret `colors.yml` described in
-[the configuration reference](skills/package-k8s-green/references/configuration.md).
-Credentials belong in a gitignored `.envrc.private` as `COLORS_PAR_*` exports.
+The root launcher is a copy in deployments; re-copy it after each skill update.
+Desired state is the flat, non-secret `colors.yml` documented in
+[`references/configuration.md`](skills/package-k8s-green/references/configuration.md).
+Credentials live in ignored `.envrc.private` exports named `COLORS_PAR_*`.
 Never set `COLORS_PAR_PROFILE`.
 
-## Security model
-
-The HA Kubernetes endpoint is private. The ephemeral operator kubeconfig uses a
-control-plane public address whose Talos and Kubernetes ports admit only
-`admin-cidr`. Node ingress permits only private cluster traffic; the public
-Hetzner ingress LB forwards 80/443 to fixed Cilium NodePorts. Provider tokens
-are child-process environment values and streamed Kubernetes Secrets, never
-rendered files. Kubeconfig and talosconfig exist only as 0600 temporary files.
-
-Remote state contains Talos machine secrets and must use a protected backend.
-State is keyed `<profile>/k8s-infrastructure.tfstate`.
+The Kubernetes API and SSH are CIDR-restricted. Workload ingress uses a
+DigitalOcean Load Balancer created by the cloud controller. Delete removes that
+Kubernetes-managed load balancer before destroying the VPC and Droplets.
+`compute-prevent-destroy: true` protects all deployment-owned cloud resources.
 
 ## Development
 
@@ -51,4 +39,4 @@ bb golden
 ./scripts/launcher.sh
 ```
 
-Read golden diffs before `bb golden:accept`. Do not provision from tests.
+Inspect golden changes before accepting them. Tests never provision resources.

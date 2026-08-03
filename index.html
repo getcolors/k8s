@@ -1,4 +1,11 @@
-<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>package-k8s-green</title><body><main><h1>package-k8s-green</h1><p>A Green Package Skill for six-node Talos Kubernetes on Hetzner: Cilium WireGuard and ingress, CCM/CSI, Flux, ExternalDNS, cert-manager, fixtures, and acceptance.</p><pre>./green build
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>k8s Package Skill</title></head>
+<body><main><h1>k8s Package Skill</h1><p>A Green workflow for a two-node kubeadm Kubernetes cluster on DigitalOcean.</p>
+<h2>Lifecycle</h2><pre><code>./green build
 ./green create --dry-run
+./green create
 ./green kubectl get nodes
-./green talosctl health</pre><p>See README.md and the packaged configuration reference.</p></main></body></html>
+./green delete</code></pre>
+<p>The package provisions a private VPC, one control plane and one worker; installs Flannel, DigitalOcean CCM and Flux; and verifies a GitOps-managed HTTPS application.</p>
+<h2>Safety</h2><p>Keep credentials in ignored <code>COLORS_PAR_*</code> environment variables, never set <code>COLORS_PAR_PROFILE</code>, never edit <code>.colors/</code>, and retain <code>compute-prevent-destroy: true</code>.</p>
+<p>See <a href="skills/package-k8s-green/references/configuration.md">the configuration reference</a>.</p></main></body></html>

@@ -1,18 +1,19 @@
 (ns io.github.getcolors.k8s.tools
-  "Package-owned Talos image, infrastructure, platform, and acceptance stages."
-  (:require [clojure.java.io :as io]
-            [clojure.string :as str]
+  "DigitalOcean infrastructure, kubeadm Ansible, and acceptance stages."
+  (:require [cheshire.core :as json]
+            [clojure.java.io :as io]
+            [clojure.walk :as walk]
+            [green.ansible :as ansible]
             [green.process :as process]
             [green.scaffold :as sc]
             [green.tofu :as tofu]
             [green.workflow :as wf]
-            [io.github.getcolors.k8s.operator :as operator]
             [io.github.getcolors.k8s.utils :as utils]
             [io.github.getcolors.k8s.validate :as validate]))
 
-(def image-tool "k8s-image")
 (def infrastructure-tool "k8s-infrastructure")
-(def bootstrap-tool "k8s-bootstrap")
+(def ansible-local-tool "k8s-ansible-local")
+(def ansible-remote-tool "k8s-ansible-remote")
 (def acceptance-tool "k8s-acceptance")
 (def tofu-tools [infrastructure-tool])
 
@@ -28,9 +29,7 @@
   (spec raw-template target {:content content}))
 (defn tool-dir [opts tool] (utils/tool-dir opts tool))
 
-(defn credential-env
-  "Provider/backend credentials translated only into child-process variables."
-  [opts & slots]
+(defn credential-env [opts & slots]
   (not-empty
    (into {}
          (keep (fn [[k env-var]]
@@ -39,6 +38,127 @@
          (apply merge (map #(validate/tofu-env opts %)
                            (conj (vec slots) :provider-backend))))))
 
+(defn infrastructure-specs [opts]
+  (let [dir (tool-dir opts infrastructure-tool)
+        data (assoc opts
+                    :digitalocean-ssh-sources-json
+                    (json/generate-string (:digitalocean-ssh-sources opts))
+                    :digitalocean-api-sources-json
+                    (json/generate-string (:digitalocean-api-sources opts)))]
+    [(spec (template "infrastructure" "main.tf") (str dir "/main.tf") data)]))
+
+(def fallback-outputs
+  {:control_plane_public_ip "192.168.0.10"
+   :control_plane_private_ip "10.20.0.10"
+   :worker_public_ips ["192.168.0.11"]
+   :worker_private_ips ["10.20.0.11"]})
+
+(defn- output-map [result]
+  (some-> (:k8s/outputs result) walk/keywordize-keys))
+
+(declare process-result)
+
+(defn infrastructure-step [opts]
+  (let [dir (tool-dir opts infrastructure-tool)
+        result (tofu/tofu-with-spec
+                opts (infrastructure-specs opts)
+                {:dir dir
+                 :env (credential-env opts :provider-compute)
+                 :output-key :k8s/outputs})]
+    (cond
+      (wf/failed? result) result
+      (= :delete (:green/event opts)) result
+      (= :build (:green/event opts)) (merge result fallback-outputs)
+      :else (merge result fallback-outputs (output-map result)))))
+
+(defn load-infrastructure-step
+  "Load node addresses from remote state without planning or changing cloud resources."
+  [opts]
+  (let [dir (tool-dir opts infrastructure-tool)
+        rendered (sc/scaffold (assoc opts :green/event :build)
+                              (infrastructure-specs opts))
+        env (merge (System/getenv) (credential-env opts :provider-compute))
+        init (process/run ["tofu" (str "-chdir=" dir) "init"
+                           "-input=false" "-no-color"] {:extra-env env})]
+    (if-not (zero? (:exit init))
+      (process-result rendered "infrastructure state initialization" init)
+      (try
+        (merge rendered fallback-outputs (tofu/outputs dir env))
+        (catch Throwable t
+          (assoc rendered :green/exit 1
+                          :green/err (str "infrastructure state output failed: "
+                                          (or (ex-message t) (str (class t))))))))))
+
+(defn data-fn [opts]
+  (merge fallback-outputs opts
+         {:host-alias (utils/host-alias opts)
+          :kubernetes-minor (utils/kubernetes-minor (:kubernetes-version opts))
+          :kubernetes-package-version
+          (utils/kubernetes-package-version (:kubernetes-version opts))}))
+
+(defn inventory [opts]
+  (let [data (data-fn opts)
+        cp-name (str (:digitalocean-name data) "-control-plane-1")
+        workers (map-indexed
+                 (fn [index [public private]]
+                   [(str (:digitalocean-name data) "-worker-" (inc index))
+                    {:ansible_host public :ansible_user "root"
+                     :private_ip private}])
+                 (map vector (:worker_public_ips data)
+                      (:worker_private_ips data)))]
+    (json/generate-string
+     {:all {:children
+            {:control_plane
+             {:hosts {cp-name {:ansible_host (:control_plane_public_ip data)
+                               :ansible_user "root"
+                               :private_ip (:control_plane_private_ip data)}}}
+             :workers {:hosts (into (sorted-map) workers)}
+             :k8s_cluster {:children {:control_plane {} :workers {}}}}}}
+     {:pretty true})))
+
+(defn ansible-local-specs [opts]
+  (let [dir (tool-dir opts ansible-local-tool)
+        data (data-fn opts)]
+    [(spec (template "ansible-local" "ansible.cfg") (str dir "/ansible.cfg") data)
+     (spec (template "ansible-local" "inventory.ini") (str dir "/inventory.ini") data)
+     (spec (template "ansible-local" "main.yml") (str dir "/main.yml") data)]))
+
+(defn ansible-local-step [opts]
+  (let [dir (tool-dir opts ansible-local-tool)
+        data (data-fn opts)
+        delete? (= :delete (:green/event opts))]
+    (ansible/ansible-with-spec
+     opts
+     {:dir dir :inventory "inventory.ini"
+      :playbooks {:create "main.yml" :delete "main.yml"}
+      :extra-vars {:host_alias (:host-alias data)
+                   :ip (:control_plane_public_ip data)
+                   :block_state (if delete? "absent" "present")}}
+     (ansible-local-specs opts))))
+
+(defn ansible-remote-specs [opts]
+  (let [dir (tool-dir opts ansible-remote-tool)
+        data (data-fn opts)]
+    [(spec (template "ansible-remote" "ansible.cfg") (str dir "/ansible.cfg") data)
+     (spec (template "ansible-remote" "create.yml") (str dir "/create.yml") data)
+     (spec (template "ansible-remote" "delete.yml") (str dir "/delete.yml") data)
+     (spec (template "ansible-remote" "gitops.yml") (str dir "/gitops.yml") data)
+     (raw-spec (str dir "/inventory.json") (inventory data))]))
+
+(defn ansible-remote-step [opts]
+  (let [dir (tool-dir opts ansible-remote-tool)]
+    (ansible/ansible-with-spec
+     opts
+     {:dir dir :inventory "inventory.json"
+      :playbooks {:create "create.yml" :delete "delete.yml"}
+      :host-key-checking false}
+     (ansible-remote-specs opts))))
+
+(defn acceptance-specs [opts]
+  (let [dir (tool-dir opts acceptance-tool)]
+    [(spec (template "acceptance" "acceptance.sh")
+           (str dir "/acceptance.sh") (data-fn opts))]))
+
 (defn process-result [opts label {:keys [exit out err]}]
   (if (zero? exit)
     (assoc opts :green/exit 0)
@@ -46,115 +166,18 @@
                 :green/err (str label " failed: "
                                 (or (not-empty err) (not-empty out) "(no output)")))))
 
-(defn image-specs [opts]
-  (let [dir (tool-dir opts image-tool)]
-    [(spec (template "image" "schematic.yaml") (str dir "/schematic.yaml") opts)
-     (spec (template "image" "create.sh") (str dir "/create.sh") opts)
-     (spec (template "image" "delete.sh") (str dir "/delete.sh") opts)]))
-
-(defn image-step
-  "Build/reuse the exact Talos snapshot, or delete it after infrastructure."
-  [opts]
-  (let [specs (image-specs opts)
-        delete? (= :delete (:green/event opts))
-        rendered (sc/scaffold (if delete?
-                                (assoc opts :green/event :create)
-                                opts)
-                              specs)]
-    (if (= :build (:green/event opts))
-      rendered
-      (let [script (str (tool-dir opts image-tool)
-                        (if delete? "/delete.sh" "/create.sh"))
-            result (process/run-with-timeout
-                    ["bash" script]
-                    {:extra-env (credential-env opts :provider-compute)}
-                    (* 30 60 1000))
-            outcome (process-result rendered "Talos image stage" result)]
-        (if (or (wf/failed? outcome) (not delete?))
-          outcome
-          (sc/scaffold (assoc outcome :green/event :delete) specs))))))
-
-(defn infrastructure-specs [opts]
-  (let [dir (tool-dir opts infrastructure-tool)]
-    [(spec (template "infrastructure" "main.tf") (str dir "/main.tf") opts)]))
-
-(defn infrastructure-step [opts]
-  (let [dir (tool-dir opts infrastructure-tool)]
-    (tofu/tofu-with-spec
-     opts (infrastructure-specs opts)
-     {:dir dir
-      :env (credential-env opts :provider-compute :provider-dns)
-      :output-key :k8s/outputs})))
-
-(defn acme-server [opts]
-  (if (= "staging" (:letsencrypt-environment opts))
-    "https://acme-staging-v02.api.letsencrypt.org/directory"
-    "https://acme-v02.api.letsencrypt.org/directory"))
-
-(defn bootstrap-data [opts]
-  (merge opts
-         (utils/chart-versions opts)
-         {:acme-server (acme-server opts)}))
-
-(defn bootstrap-specs [opts]
-  (let [dir (tool-dir opts bootstrap-tool)
-        data (bootstrap-data opts)]
-    (mapv (fn [file]
-            (spec (template "bootstrap" file) (str dir "/" file) data))
-          ["create.sh" "cilium-values.yaml" "ccm-values.yaml"
-           "csi-values.yaml" "external-dns-values.yaml"
-           "cert-manager-values.yaml" "platform.yaml" "gitops.yaml"])))
-
-(defn cluster-env [opts configs]
-  (let [outputs (:k8s/outputs opts)]
-    (merge (credential-env opts :provider-compute :provider-dns)
-           configs
-           {"HCLOUD_NETWORK" (str (:network_id outputs))
-            "INGRESS_IPV4" (str (:ingress_ipv4 outputs))})))
-
-(defn bootstrap-step
-  "Install Cilium and all controllers without persisting cluster credentials."
-  [opts]
-  (let [rendered (sc/scaffold opts (bootstrap-specs opts))]
-    (if (or (= :build (:green/event opts)) (= :delete (:green/event opts)))
-      rendered
-      (operator/with-cluster-configs
-       opts
-       (fn [configs]
-         (process-result
-          rendered "cluster bootstrap"
-          (process/run-with-timeout
-           ["bash" (str (tool-dir opts bootstrap-tool) "/create.sh")]
-           {:extra-env (cluster-env opts configs)}
-           (* 30 60 1000))))))))
-
-(defn acceptance-specs [opts]
-  (let [dir (tool-dir opts acceptance-tool)]
-    [(spec (template "acceptance" "acceptance.sh")
-           (str dir "/acceptance.sh") opts)]))
-
 (defn acceptance-step [opts]
   (let [rendered (sc/scaffold opts (acceptance-specs opts))]
     (if (or (= :build (:green/event opts)) (= :delete (:green/event opts)))
       rendered
-      (operator/with-cluster-configs
-       opts
-       (fn [configs]
-         (process-result
-          rendered "acceptance"
-          (process/run-with-timeout
-           ["bash" (str (tool-dir opts acceptance-tool) "/acceptance.sh")]
-           {:extra-env (let [outputs (:k8s/outputs opts)
-                             control-planes (:control_plane_ipv4 outputs)
-                             workers (:worker_ipv4 outputs)]
-                         (merge configs
-                                {"EXPECTED_INGRESS_IPV4" (str (:ingress_ipv4 outputs))
-                                 "TALOS_ENDPOINT" (str (first control-planes))
-                                 "CONTROL_PLANE_NODES" (str/join "," control-planes)
-                                 "WORKER_NODES" (str/join "," workers)}))}
-           (* 20 60 1000))))))))
+      (process-result
+       rendered "acceptance"
+       (process/run-with-timeout
+        ["bash" (str (tool-dir opts acceptance-tool) "/acceptance.sh")]
+        {:extra-env nil} (* 25 60 1000))))))
 
 (defn generated-cleanup-step [opts]
   (-> opts
-      (sc/scaffold (bootstrap-specs opts))
+      (sc/scaffold (ansible-local-specs opts))
+      (sc/scaffold (ansible-remote-specs opts))
       (sc/scaffold (acceptance-specs opts))))

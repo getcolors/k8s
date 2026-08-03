@@ -2,9 +2,9 @@
   "terraform" : {
     "backend" : {
       "s3" : {
-        "bucket" : "tofu-state-319271fed8bc6d2d9059362be1165f37-eu",
+        "bucket" : "fixture-state",
         "endpoints" : {
-          "s3" : "https://319271fed8bc6d2d9059362be1165f37.eu.r2.cloudflarestorage.com"
+          "s3" : "https://account.r2.cloudflarestorage.com"
         },
         "key" : "k8s-fixture/k8s-infrastructure.tfstate",
         "region" : "auto",

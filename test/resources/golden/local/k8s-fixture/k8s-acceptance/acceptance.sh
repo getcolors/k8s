@@ -1,72 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${KUBECONFIG:?KUBECONFIG is required}"
-: "${TALOSCONFIG:?TALOSCONFIG is required}"
-: "${EXPECTED_INGRESS_IPV4:?EXPECTED_INGRESS_IPV4 is required}"
-: "${TALOS_ENDPOINT:?TALOS_ENDPOINT is required}"
-: "${CONTROL_PLANE_NODES:?CONTROL_PLANE_NODES is required}"
-: "${WORKER_NODES:?WORKER_NODES is required}"
+alias_name='k8s-fixture'
+host='hello.fixture.example'
+kubectl=(ssh -- "$alias_name" "sudo -n kubectl --kubeconfig=/etc/kubernetes/admin.conf")
 
-kubectl wait node --all --for=condition=Ready --timeout=10m
-[ "$(kubectl get nodes -o name | wc -l)" -eq 6 ] || {
-  echo 'acceptance: expected exactly six Kubernetes nodes' >&2
+"${kubectl[@]}" wait node --all --for=condition=Ready --timeout=10m
+[ "$("${kubectl[@]}" get nodes -o name | wc -l)" -eq 2 ] || {
+  echo 'acceptance: expected exactly two Kubernetes nodes' >&2
   exit 1
 }
+"${kubectl[@]}" -n kube-flannel rollout status daemonset/kube-flannel-ds --timeout=10m
+"${kubectl[@]}" -n kube-system rollout status deployment/digitalocean-cloud-controller-manager --timeout=10m
+"${kubectl[@]}" -n flux-system wait gitrepository/colors-app --for=condition=Ready --timeout=10m
+"${kubectl[@]}" -n flux-system wait kustomization/colors-app --for=condition=Ready --timeout=15m
+"${kubectl[@]}" -n flux-system wait kustomization/controllers --for=condition=Ready --timeout=15m
+"${kubectl[@]}" -n flux-system wait kustomization/config --for=condition=Ready --timeout=15m
+"${kubectl[@]}" -n flux-system wait kustomization/apps --for=condition=Ready --timeout=15m
+"${kubectl[@]}" -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=10m
+"${kubectl[@]}" -n external-dns rollout status deployment/external-dns --timeout=10m
+"${kubectl[@]}" -n cert-manager rollout status deployment/cert-manager --timeout=10m
+"${kubectl[@]}" -n hello-world rollout status deployment/hello-world --timeout=10m
+"${kubectl[@]}" -n hello-world wait certificate/hello-world-tls --for=condition=Ready --timeout=15m
 
-talosctl health --endpoints "$TALOS_ENDPOINT" --nodes "$TALOS_ENDPOINT" \
-  --init-node "$TALOS_ENDPOINT" \
-  --control-plane-nodes "$CONTROL_PLANE_NODES" \
-  --worker-nodes "$WORKER_NODES" --wait-timeout=10m
-kubectl -n kube-system rollout status daemonset/cilium --timeout=10m
-kubectl -n kube-system rollout status deployment/cilium-operator --timeout=10m
-kubectl -n kube-system rollout status deployment/hcloud-cloud-controller-manager --timeout=10m
-kubectl -n kube-system rollout status deployment/hcloud-csi-controller --timeout=10m
-kubectl -n kube-system rollout status daemonset/hcloud-csi-node --timeout=10m
-kubectl -n external-dns rollout status deployment/external-dns --timeout=10m
-kubectl -n cert-manager rollout status deployment/cert-manager --timeout=10m
-kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=10m
-kubectl -n flux-system wait deployment --all --for=condition=Available --timeout=10m
-
-kubectl -n kube-system exec daemonset/cilium -- cilium-dbg status --verbose \
-  | grep -Eiq 'Encryption:[[:space:]]+Wireguard|WireGuard' || {
-    echo 'acceptance: Cilium does not report WireGuard encryption' >&2
-    exit 1
-  }
-
-kubectl -n flux-system wait gitrepository/colors --for=condition=Ready --timeout=10m
-kubectl -n flux-system wait kustomization/colors --for=condition=Ready --timeout=10m
-
-
-kubectl -n volume-test wait pod/acceptance --for=condition=Ready --timeout=10m
-[ "$(kubectl -n volume-test get pvc acceptance -o jsonpath='{.status.phase}')" = Bound ]
-kubectl -n volume-test exec acceptance -- grep -qx persistent /data/result
-
-
-
-kubectl -n hello-world rollout status deployment/hello-world --timeout=10m
-kubectl -n hello-world wait certificate/hello-world-tls --for=condition=Ready --timeout=15m
-resolved=''
 for _ in $(seq 1 90); do
-  resolved=$(getent ahostsv4 'hello.k8s.fixture.example' | awk 'NR == 1 {print $1}')
-  [ -n "$resolved" ] && break
-  sleep 10
-done
-[ -n "$resolved" ] || { echo 'acceptance: ingress DNS did not resolve' >&2; exit 1; }
-
-[ "$resolved" = "$EXPECTED_INGRESS_IPV4" ] || {
-  echo "acceptance: ingress DNS resolved to $resolved, expected $EXPECTED_INGRESS_IPV4" >&2
-  exit 1
-}
-
-for _ in $(seq 1 60); do
-  if curl --fail --silent --show-error --max-time 10 \
-      'https://hello.k8s.fixture.example/' >/dev/null; then
-    echo 'acceptance: Talos, six nodes, Cilium WireGuard/ingress, CCM/CSI, Flux, DNS, TLS, and volume are healthy'
+  if response=$(curl --fail --silent --show-error --max-time 15 "https://${host}/"); then
+    grep -qx 'Hello from kubeadm on DigitalOcean' <<<"$response" || {
+      echo "acceptance: unexpected response: $response" >&2
+      exit 1
+    }
+    curl --fail --silent --show-error --max-time 15 "https://${host}/healthz" | grep -qx ok
+    echo 'acceptance: two nodes, Flannel, DigitalOcean CCM/LB, Flux, DNS, TLS, and hello-world are healthy'
     exit 0
   fi
   sleep 10
 done
-echo 'acceptance: HTTPS ingress did not converge' >&2
-exit 1
 
+echo 'acceptance: HTTPS application did not converge' >&2
+exit 1

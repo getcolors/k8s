@@ -7,68 +7,75 @@
             [io.github.getcolors.k8s.validate-test :as vt]
             [io.github.getcolors.k8s.workflow :as workflow]))
 
-(defn temp-dir []
+(defn- temp-dir []
   (let [f (java.io.File/createTempFile "k8s-test-" "")]
     (.delete f) (.mkdirs f) (str f)))
-(defn next-steps [event step] (vec (rest (workflow/wire-fn step {:green/event event}))))
 
-(deftest create-orders-owned-image-infrastructure-bootstrap-and-acceptance
-  (is (= [:k8s/image] (next-steps :create :k8s/start)))
-  (is (= [:k8s/infrastructure] (next-steps :create :k8s/image)))
-  (is (= [:k8s/bootstrap] (next-steps :create :k8s/infrastructure)))
-  (is (= [:k8s/acceptance] (next-steps :create :k8s/bootstrap))))
+(defn- next-steps [event step]
+  (rest (workflow/wire-fn step {:green/event event})))
 
-(deftest delete-destroys-infrastructure-before-image
-  (is (= [:k8s/infrastructure] (next-steps :delete :k8s/start)))
-  (is (= [:k8s/image] (next-steps :delete :k8s/infrastructure)))
-  (is (= [:k8s/generated-cleanup] (next-steps :delete :k8s/image))))
+(deftest create-orders-infrastructure-before-kubeadm-and-acceptance
+  (is (= [:k8s/infrastructure] (next-steps :create :k8s/start)))
+  (is (= [:k8s/ansible-local] (next-steps :create :k8s/infrastructure)))
+  (is (= [:k8s/ansible-remote] (next-steps :create :k8s/ansible-local)))
+  (is (= [:k8s/acceptance] (next-steps :create :k8s/ansible-remote))))
+
+(deftest delete-loads-state-and-removes-load-balancer-before-infrastructure
+  (is (= [:k8s/load-infrastructure] (next-steps :delete :k8s/start)))
+  (is (= [:k8s/ansible-remote]
+         (next-steps :delete :k8s/load-infrastructure)))
+  (is (= [:k8s/ansible-local] (next-steps :delete :k8s/ansible-remote)))
+  (is (= [:k8s/infrastructure] (next-steps :delete :k8s/ansible-local))))
 
 (deftest build-and-dry-run-need-no-credentials
-  (is (= 0 (:green/exit (workflow/start-step (assoc vt/base :green/event :build) {}))))
   (is (= 0 (:green/exit (workflow/start-step
-                         (assoc vt/base :green/event :create :green/dry-run true) {})))))
+                          (assoc vt/base :green/event :build) {}))))
+  (is (= 0 (:green/exit (workflow/start-step
+                          (assoc vt/base :green/event :create :green/dry-run true) {})))))
 
-(deftest real-create-needs-every-selected-provider-credential
-  (let [result (workflow/start-step (assoc vt/base :green/event :create) {})]
-    (is (= 2 (:green/exit result)))
-    (is (str/includes? (:green/err result) "COLORS_PAR_HCLOUD_TOKEN"))
-    (is (str/includes? (:green/err result) "COLORS_PAR_CLOUDFLARE_API_TOKEN"))
-    (is (str/includes? (:green/err result) "COLORS_PAR_R2_ACCESS_KEY_ID"))))
-
-(deftest delete-guard-requires-one-run-override
-  (let [credentials {"COLORS_PAR_HCLOUD_TOKEN" "h"
-                     "COLORS_PAR_CLOUDFLARE_API_TOKEN" "c"
-                     "COLORS_PAR_R2_ACCESS_KEY_ID" "a"
-                     "COLORS_PAR_R2_SECRET_ACCESS_KEY" "s"}]
-    (is (= 2 (:green/exit (workflow/start-step
-                           (assoc vt/base :green/event :delete) credentials))))
+(deftest real-lifecycle-needs-secrets-and-delete-override
+  (is (= 2 (:green/exit (workflow/start-step
+                          (assoc vt/base :green/event :create) {}))))
+  (let [env {"COLORS_PAR_DO_TOKEN" "x"
+             "COLORS_PAR_CLOUDFLARE_API_TOKEN" "y"}]
     (is (= 0 (:green/exit (workflow/start-step
-                           (assoc vt/base :green/event :delete)
-                           (assoc credentials "COLORS_PAR_COMPUTE_PREVENT_DESTROY" "false")))))))
+                            (assoc vt/base :green/event :create) env))))
+    (is (= 2 (:green/exit (workflow/start-step
+                            (assoc vt/base :green/event :delete) env))))
+    (is (= 0 (:green/exit (workflow/start-step
+                            (assoc vt/base :green/event :delete)
+                            (assoc env "COLORS_PAR_COMPUTE_PREVENT_DESTROY" "false")))))))
 
-(deftest backend-key-is-profile-and-package-stage
-  (let [dir (temp-dir) opts (assoc vt/base :workdir dir)
-        result ((workflow/backend-advice tools/infrastructure-tool) opts)
-        backend (slurp (str (tools/tool-dir result tools/infrastructure-tool)
-                            "/backend.tf.json"))]
-    (is (str/includes? backend "k8s-fixture/k8s-infrastructure.tfstate"))))
+(deftest backend-key-is-package-specific
+  (let [dir (temp-dir)
+        opts (merge vt/base {:profile "p" :workdir dir :provider-backend "r2"
+                             :r2-bucket "b" :r2-endpoint "https://r2"})]
+    ((workflow/backend-advice tools/infrastructure-tool) opts)
+    (is (str/includes?
+         (slurp (str (tools/tool-dir opts tools/infrastructure-tool)
+                     "/backend.tf.json"))
+         "p/k8s-infrastructure.tfstate"))))
 
 (deftest whole-build-renders-all-stages
   (let [dir (temp-dir)
         result (wf/run workflow/workflow
-                       (assoc vt/base :green/event :build :workdir dir))
-        root (str dir "/k8s-fixture/")]
-    (is (= 0 (:green/exit result)) (:green/err result))
-    (doseq [file ["k8s-image/create.sh" "k8s-image/schematic.yaml"
-                  "k8s-infrastructure/main.tf" "k8s-infrastructure/backend.tf.json"
-                  "k8s-bootstrap/create.sh" "k8s-bootstrap/platform.yaml"
-                  "k8s-bootstrap/gitops.yaml" "k8s-acceptance/acceptance.sh"]]
+                       (assoc vt/base :green/event :build
+                              :workdir dir :profile "built"))
+        root (str dir "/built/")]
+    (is (= 0 (:green/exit result)))
+    (doseq [file ["k8s-infrastructure/main.tf"
+                  "k8s-infrastructure/backend.tf.json"
+                  "k8s-ansible-local/main.yml"
+                  "k8s-ansible-remote/create.yml"
+                  "k8s-ansible-remote/delete.yml"
+                  "k8s-ansible-remote/inventory.json"
+                  "k8s-acceptance/acceptance.sh"]]
       (is (.exists (io/file (str root file))) file))))
 
 (deftest dry-run-touches-nothing
   (let [dir (temp-dir)
         result (wf/run workflow/workflow
                        (assoc vt/base :green/event :create :green/dry-run true
-                                      :workdir dir))]
+                              :workdir dir :profile "dry"))]
     (is (= 0 (:green/exit result)))
     (is (empty? (seq (.listFiles (io/file dir)))))))

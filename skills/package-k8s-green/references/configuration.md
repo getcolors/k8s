@@ -1,50 +1,65 @@
 # Configuration
 
 `colors.yml` is a flat non-secret YAML map. The reference deployment is
-`k8s-hetzner/colors.yml`; package validation intentionally requires three
-control planes, three workers, Hetzner compute and Cloudflare DNS.
+`k8s-digitalocean/colors.yml`. Validation reports all errors together and fixes
+the supported topology at one kubeadm control plane and one worker.
 
 ## Credentials
 
 | Purpose | Environment variable |
 |---|---|
-| Hetzner compute, image, CCM and CSI | `COLORS_PAR_HCLOUD_TOKEN` |
-| Cloudflare DNS, ExternalDNS and ACME DNS-01 | `COLORS_PAR_CLOUDFLARE_API_TOKEN` |
+| DigitalOcean compute and cloud controller | `COLORS_PAR_DO_TOKEN` |
+| Cloudflare ExternalDNS | `COLORS_PAR_CLOUDFLARE_API_TOKEN` |
 | R2 backend | `COLORS_PAR_R2_ACCESS_KEY_ID`, `COLORS_PAR_R2_SECRET_ACCESS_KEY` |
 | S3 backend | `COLORS_PAR_S3_ACCESS_KEY_ID`, `COLORS_PAR_S3_SECRET_ACCESS_KEY` |
 
 Never export `COLORS_PAR_PROFILE`. Keep `compute-prevent-destroy: true` in YAML.
+The DigitalOcean token is streamed into the `digitalocean` Kubernetes Secret;
+the Cloudflare token is streamed into `external-dns/cloudflare-api-token`.
+Neither is rendered.
+
+## Required desired state
+
+- Providers: `provider-compute: digitalocean`, DNS `cloudflare` or `no-infra`,
+  and backend `local`, `s3`, or `r2`.
+- Exact versions: `kubernetes-version`, `flannel-version`, `flux-version`, and
+  `digitalocean-cloud-controller-version` as `vMAJOR.MINOR.PATCH`.
+- Kubernetes: kubeadm, Flannel, pod/service CIDRs, one control plane, one worker.
+- GitOps: public HTTPS `repository`, branch, and `./`-relative path.
+- DigitalOcean: name, region, both sizes, Ubuntu image, existing SSH-key
+  fingerprint, deployment-owned VPC CIDR, and administrative source CIDRs.
+- DNS/TLS: application host, Cloudflare zone, ExternalDNS owner ID, and ACME
+  environment.
 
 ## Lifecycle and generated output
 
-Create runs package-owned image, infrastructure/Talos bootstrap, platform
-bootstrap and acceptance stages. The only Tofu state key is
-`<profile>/k8s-infrastructure.tfstate`. It contains sensitive Talos state and
-must be protected.
+Create provisions the VPC, firewalls and Droplets; records the control-plane SSH
+alias; installs containerd and exact kubeadm packages; initializes the cluster;
+joins the worker; installs Flannel, DigitalOcean CCM and Flux; then verifies
+GitOps, DNS, TLS, and HTTPS.
 
-`build` renders:
+Remote state is `<profile>/k8s-infrastructure.tfstate`. `build` renders:
 
 ```text
 .colors/<profile>/
-├── k8s-image/           schematic.yaml create.sh delete.sh
 ├── k8s-infrastructure/  backend.tf.json main.tf
-├── k8s-bootstrap/       create.sh values files platform.yaml gitops.yaml
+├── k8s-ansible-local/   ansible.cfg inventory.ini main.yml
+├── k8s-ansible-remote/  ansible.cfg inventory.json create.yml delete.yml gitops.yml
 └── k8s-acceptance/      acceptance.sh
 ```
 
-No token, kubeconfig, talosconfig or private key is rendered. Operator commands
-initialize the selected backend, load sensitive outputs into 0600 temporary
-files, run the requested binary without a shell, and erase the files.
+Generated output can contain public/private node addresses but never tokens or
+kubeconfig. Do not edit or commit it.
 
-## Networking
+## Networking and recovery
 
-The API hostname resolves to a private HA load balancer for cluster nodes.
-`hcloud-node-subnet-cidr` must be contained by `hcloud-network-cidr` and provide
-at least 32 addresses; API and node addresses are derived from that subnet.
-Public control-plane ports 50000 and 6443 accept only `admin-cidr`. Cluster-only
-rules cover Talos trust on 50001, etcd, kubelet, Cilium health, VXLAN and WireGuard. The public ingress
-LB sends 80/443 to Cilium NodePorts 32080/32443 over the private network.
+The VPC admits all node-to-node traffic. Public SSH and TCP 6443 admit only the
+configured CIDRs. Flannel binds the private `eth1` interface. DigitalOcean CCM
+creates the public LoadBalancer requested by ingress-nginx; backend traffic
+stays on the VPC.
 
-ExternalDNS is restricted to `cloudflare-zone` and `upsert-only`. cert-manager
-uses the selected Let's Encrypt environment. Flux requires a public HTTPS
-repository, branch and `./`-relative path.
+A repeated `create` converges the existing cluster. For recovery after replacing
+nodes, retain the remote OpenTofu state and rerun `create`. If Kubernetes is too
+damaged to remove its LoadBalancer, do not destroy the VPC first: restore API
+access or remove only the deployment-owned LoadBalancer explicitly, then rerun
+the guarded delete.
