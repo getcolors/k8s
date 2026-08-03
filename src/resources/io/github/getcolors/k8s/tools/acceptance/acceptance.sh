@@ -17,9 +17,9 @@ kubectl=(ssh -- "$alias_name" "sudo -n kubectl --kubeconfig=/etc/kubernetes/admi
 "${kubectl[@]}" -n flux-system wait kustomization/controllers --for=condition=Ready --timeout=15m
 "${kubectl[@]}" -n flux-system wait kustomization/config --for=condition=Ready --timeout=15m
 "${kubectl[@]}" -n flux-system wait kustomization/apps --for=condition=Ready --timeout=15m
-"${kubectl[@]}" -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=10m
-"${kubectl[@]}" -n external-dns rollout status deployment/external-dns --timeout=10m
-"${kubectl[@]}" -n cert-manager rollout status deployment/cert-manager --timeout=10m
+"${kubectl[@]}" -n ingress-nginx wait pod --all --for=condition=Ready --timeout=10m
+"${kubectl[@]}" -n external-dns wait pod --all --for=condition=Ready --timeout=10m
+"${kubectl[@]}" -n cert-manager wait pod --all --for=condition=Ready --timeout=10m
 "${kubectl[@]}" -n hello-world rollout status deployment/hello-world --timeout=10m
 "${kubectl[@]}" -n hello-world wait certificate/hello-world-tls --for=condition=Ready --timeout=15m
 

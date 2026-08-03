@@ -235,6 +235,20 @@
       register: ccm_apply
       changed_when: "'created' in ccm_apply.stdout or 'configured' in ccm_apply.stdout"
 
+    - name: Bind DigitalOcean load balancers to the deployment-owned VPC
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n kube-system
+        set env deployment/digitalocean-cloud-controller-manager
+        DO_CLUSTER_VPC_ID=<{ digitalocean_vpc_id }>
+      register: ccm_vpc
+      changed_when: "'updated' in ccm_vpc.stdout"
+
+    - name: Wait for DigitalOcean cloud controller after VPC configuration
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n kube-system
+        rollout status deployment/digitalocean-cloud-controller-manager --timeout=300s
+      changed_when: false
+
     - name: Generate a short-lived worker join command
       ansible.builtin.command: kubeadm token create --ttl 30m --print-join-command
       register: join_command

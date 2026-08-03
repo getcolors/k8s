@@ -48,7 +48,8 @@
     [(spec (template "infrastructure" "main.tf") (str dir "/main.tf") data)]))
 
 (def fallback-outputs
-  {:control_plane_public_ip "192.168.0.10"
+  {:digitalocean_vpc_id "00000000-0000-0000-0000-000000000000"
+   :control_plane_public_ip "192.168.0.10"
    :control_plane_private_ip "10.20.0.10"
    :worker_public_ips ["192.168.0.11"]
    :worker_private_ips ["10.20.0.11"]})

@@ -133,6 +133,9 @@ resource "digitalocean_firewall" "worker" {
   lifecycle { prevent_destroy = true }
 }
 
+output "digitalocean_vpc_id" {
+  value = digitalocean_vpc.cluster.id
+}
 output "control_plane_public_ip" {
   value = digitalocean_droplet.control_plane[0].ipv4_address
 }

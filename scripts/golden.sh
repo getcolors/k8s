@@ -37,6 +37,7 @@ infra="$base/k8s-infrastructure/main.tf"
 grep -q 'resource "digitalocean_vpc" "cluster"' "$infra"
 grep -q 'resource "digitalocean_droplet" "control_plane"' "$infra"
 grep -q 'resource "digitalocean_droplet" "worker"' "$infra"
+grep -q 'output "digitalocean_vpc_id"' "$infra"
 grep -q 'source_addresses = local.api_sources' "$infra"
 grep -q '203.0.113.10/32' "$infra"
 grep -q '10.20.0.0/20' "$infra"
@@ -54,6 +55,7 @@ for pin in v1.36.3 v0.28.8 v0.1.68 v2.9.3; do
   grep -q "$pin" "$play" || { echo "golden: missing component pin $pin" >&2; exit 1; }
 done
 grep -q 'cloud-provider=external' "$play"
+grep -q 'DO_CLUSTER_VPC_ID=00000000-0000-0000-0000-000000000000' "$play"
 grep -q -- '--iface=eth1' "$play"
 grep -q 'COLORS_PAR_DO_TOKEN' "$play"
 grep -q 'COLORS_PAR_CLOUDFLARE_API_TOKEN' "$play"
@@ -61,7 +63,7 @@ grep -q 'no_log: true' "$play"
 grep -q 'path: "./clusters/k8s-digitalocean"' "$base/k8s-ansible-remote/gitops.yml"
 
 delete="$base/k8s-ansible-remote/delete.yml"
-grep -q 'delete service ingress-nginx-controller' "$delete"
+grep -q 'app.kubernetes.io/name=ingress-nginx' "$delete"
 grep -q 'k8s/ansible-remote' <(cd "$root" && bb -e '(require (quote io.github.getcolors.k8s.workflow)) (print io.github.getcolors.k8s.workflow/side-effecting-steps)')
 
 acceptance="$base/k8s-acceptance/acceptance.sh"
