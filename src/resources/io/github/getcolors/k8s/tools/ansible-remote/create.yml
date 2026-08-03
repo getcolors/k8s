@@ -45,7 +45,10 @@
           net.bridge.bridge-nf-call-iptables = 1
           net.bridge.bridge-nf-call-ip6tables = 1
           net.ipv4.ip_forward = 1
-      notify: Reload sysctl
+
+    - name: Apply Kubernetes networking sysctls on every converge
+      ansible.builtin.command: sysctl --system
+      changed_when: false
 
     - name: Install operating-system prerequisites
       ansible.builtin.apt:
@@ -131,9 +134,6 @@
       loop: [containerd, kubelet]
 
   handlers:
-    - name: Reload sysctl
-      ansible.builtin.command: sysctl --system
-      changed_when: true
     - name: Restart containerd
       ansible.builtin.systemd_service:
         name: containerd
