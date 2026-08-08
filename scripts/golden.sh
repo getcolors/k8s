@@ -70,7 +70,10 @@ acceptance="$base/k8s-acceptance/acceptance.sh"
 grep -q 'expected exactly two Kubernetes nodes' "$acceptance"
 grep -q 'https://${host}/healthz' "$acceptance"
 
-if rg -q 'client-certificate-data|client-key-data|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|REPLACE_ME|github_pat_|ghp_' "$tmp"; then
+# POSIX grep on purpose. rg is not declared in devenv.nix, and a missing binary
+# inside `if` is simply false — the guard would pass silently on a machine
+# without ripgrep, which is the one case it exists to cover.
+if grep -rEq 'client-certificate-data|client-key-data|BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY|REPLACE_ME|github_pat_|ghp_|gho_|ghu_|ghs_|ghr_' "$tmp"; then
   echo 'golden: credential-shaped material was rendered' >&2; exit 1
 fi
 
