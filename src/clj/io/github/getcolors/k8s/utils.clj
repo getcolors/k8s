@@ -1,16 +1,12 @@
 (ns io.github.getcolors.k8s.utils
   "Launcher contract and path/version helpers."
-  (:require [clojure.java.io :as io]
-            [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [green.cli :as green-cli]))
 
 (def contract 2)
 
 (defn tool-dir [opts tool]
-  (let [workdir (io/file (or (:workdir opts) ".colors"))
-        state-dir (when-not (.isAbsolute workdir)
-                    (some-> (:green/state-file opts) io/file .getAbsoluteFile .getParent))
-        root (if state-dir (io/file state-dir workdir) workdir)]
-    (str (io/file root (or (:profile opts) "k8s") tool))))
+  (green-cli/stage-dir opts tool {:default-profile "k8s"}))
 
 (defn unprefix-v [version] (str/replace-first (str version) #"^v" ""))
 (defn kubernetes-minor [version]

@@ -5,6 +5,7 @@
             [clojure.walk :as walk]
             [green.ansible :as ansible]
             [green.process :as process]
+            [green.providers :as provider-ops]
             [green.scaffold :as sc]
             [green.tofu :as tofu]
             [green.workflow :as wf]
@@ -18,25 +19,18 @@
 (def tofu-tools [infrastructure-tool])
 
 (def ^:private root "io.github.getcolors.k8s.tools")
-(def ^:private raw-template :io.github.getcolors.k8s/raw)
-(def ^:private template-opts
-  {:tag-open \< :tag-close \> :filter-open \{ :filter-close \}})
+(def ^:private template-opts sc/preserve-jinja-delimiters)
 
 (defn template [path file] (keyword (str root "." path) file))
 (defn spec [template target data]
   {:template template :target target :data data :opts template-opts})
 (defn raw-spec [target content]
-  (spec raw-template target {:content content}))
+  (sc/content-spec target content))
 (defn tool-dir [opts tool] (utils/tool-dir opts tool))
 
 (defn credential-env [opts & slots]
-  (not-empty
-   (into {}
-         (keep (fn [[k env-var]]
-                 (when-let [value (not-empty (str (get opts k)))]
-                   [env-var value])))
-         (apply merge (map #(validate/tofu-env opts %)
-                           (conj (vec slots) :provider-backend))))))
+  (provider-ops/tool-env validate/providers opts
+                         (conj (vec slots) :provider-backend)))
 
 (defn infrastructure-specs [opts]
   (let [dir (tool-dir opts infrastructure-tool)

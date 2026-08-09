@@ -3,11 +3,11 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [green.cli :as green-cli]
+            [green.process :as process]
             [io.github.getcolors.k8s.utils :as utils]
             [io.github.getcolors.k8s.validate :as validate]))
 
-(defn shell-quote [x]
-  (str "'" (str/replace (str x) "'" "'\\''") "'"))
+(def shell-quote process/posix-quote)
 
 (defn command [opts args]
   (let [remote (str/join " "
@@ -18,13 +18,7 @@
     ["ssh" "-F" (str (io/file (System/getProperty "user.home") ".ssh/config"))
      "--" (utils/host-alias opts) remote]))
 
-(defn inherit-run [argv]
-  (try
-    (let [child (-> (ProcessBuilder. ^java.util.List (mapv str argv))
-                    .inheritIO .start)]
-      {:exit (.waitFor child)})
-    (catch Exception e
-      {:exit -1 :err (or (.getMessage e) (str (class e)))})))
+(def inherit-run process/run-inherit)
 
 (defn run
   ([state-file _kind args] (run state-file :kubectl args inherit-run (System/getenv)))
