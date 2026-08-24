@@ -43,6 +43,16 @@ The package depends only on Green. Its own multi-node DigitalOcean template is
 preferable to coupling to ONCE's single-server templates. Golden output guards
 firewall, state-key, pin, and no-rendered-secret invariants.
 
+## Documentation
+
+`index.html` is this repository's landing page and carries two analytics tags:
+GA4 measurement ID `G-4VKP1WY4QJ`, whose explicit `page_title` must exactly
+equal the decoded HTML `<title>` and stay distinct and stable so one Analytics
+property can separate repositories, and the self-hosted Rybbit snippet
+`<script src="https://rybbit.getcolors.ai/api/script.js" data-site-id="9fb9c41a6d49" defer></script>`,
+which shares one site ID across every page because `getcolors.github.io/<repo>/`
+paths already encode the repository. Never add one tag without the other.
+
 ## Git
 
 The launcher pin is managed only by `bb pin` after a clean pushed commit. Never
