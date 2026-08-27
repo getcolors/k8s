@@ -1,0 +1,101 @@
+// Two-node kubeadm lifecycle DAG and package-specific remote-state advice, the
+// port of io.github.getcolors.k8s.workflow.
+
+import { readPars, parName } from "red/cli";
+import * as dryRun from "red/dry-run";
+import { preflight } from "red/lifecycle";
+import * as progress from "red/progress";
+import * as tofu from "red/tofu";
+import { adviceAdd, workflow, type Opts, type WireDecl } from "red/workflow";
+import * as tools from "./tools.ts";
+import * as validate from "./validate.ts";
+
+export const defaults: Opts = {
+  "compute-prevent-destroy": true,
+  "provider-compute": "digitalocean",
+  "provider-dns": "no-infra",
+  "provider-backend": "local",
+  "kubernetes-distribution": "kubeadm",
+  "kubernetes-cni": "flannel",
+  "control-plane-count": 1,
+  "worker-count": 1,
+  "digitalocean-cloud-controller": true,
+  "repository-branch": "main",
+  "repository-path": "./clusters/k8s-digitalocean",
+  "cert-manager-acme-environment": "production",
+  workdir: ".colors",
+};
+
+const lifecycleEvents = ["create", "delete"];
+
+// Overlay credentials, validate, and guard real destruction.
+export async function startStep(
+  opts: Opts,
+  env: Record<string, string | undefined> = process.env,
+): Promise<Opts> {
+  return preflight(opts, {
+    defaults,
+    overlay: readPars,
+    validators: [
+      (_opts, environment) => validate.envErrors(environment),
+      (current) => validate.stateErrors(current),
+      (current, _environment, { event, real }) =>
+        real && lifecycleEvents.includes(String(event))
+          ? validate.secretErrors(current)
+          : [],
+      (current, _environment, { event, real }) =>
+        real && event === "delete" && current["compute-prevent-destroy"]
+          ? ["compute destruction is protected; set " +
+             `${parName("compute-prevent-destroy")}=false for this delete`]
+          : [],
+    ],
+  }, env);
+}
+
+export function wireFn(step: string, runOpts: Opts): WireDecl | undefined {
+  if (runOpts["red/event"] === "delete") {
+    const graph: Record<string, WireDecl> = {
+      "k8s/start": [startStep, "k8s/load-infrastructure"],
+      "k8s/load-infrastructure": [tools.loadInfrastructureStep, "k8s/ansible-remote"],
+      "k8s/ansible-remote": [tools.ansibleRemoteStep, "k8s/ansible-local"],
+      "k8s/ansible-local": [tools.ansibleLocalStep, "k8s/infrastructure"],
+      "k8s/infrastructure": [tools.infrastructureStep, "k8s/generated-cleanup"],
+      "k8s/generated-cleanup": [tools.generatedCleanupStep],
+    };
+    return graph[step];
+  }
+  const graph: Record<string, WireDecl> = {
+    "k8s/start": [startStep, "k8s/infrastructure"],
+    "k8s/infrastructure": [tools.infrastructureStep, "k8s/ansible-local"],
+    "k8s/ansible-local": [tools.ansibleLocalStep, "k8s/ansible-remote"],
+    "k8s/ansible-remote": [tools.ansibleRemoteStep, "k8s/acceptance"],
+    "k8s/acceptance": [tools.acceptanceStep],
+  };
+  return graph[step];
+}
+
+// Write the selected backend with a package-specific remote state key.
+export function backendAdvice(tool: string) {
+  return tofu.conventionalBackendAdvice({
+    dir: (opts) => tools.toolDir(opts, tool),
+    key: (opts) => `${opts.profile ?? ""}/${tool}.tfstate`,
+  });
+}
+
+export const sideEffectingSteps = [
+  "k8s/load-infrastructure", "k8s/infrastructure", "k8s/ansible-local",
+  "k8s/ansible-remote", "k8s/acceptance", "k8s/generated-cleanup",
+];
+
+function create() {
+  let wf = workflow({ start: "k8s/start", wireFn });
+  wf = adviceAdd(wf, "k8s/load-infrastructure", "before",
+    "io.github.getcolors.k8s.workflow/backend", backendAdvice(tools.infrastructureTool));
+  wf = adviceAdd(wf, "k8s/infrastructure", "before",
+    "io.github.getcolors.k8s.workflow/backend", backendAdvice(tools.infrastructureTool));
+  wf = progress.advise(wf);
+  wf = dryRun.advise(wf, sideEffectingSteps);
+  return wf;
+}
+
+export const k8sWorkflow = create();

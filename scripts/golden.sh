@@ -12,7 +12,7 @@ accept=0
 build() {
   local variant=$1
   shift
-  (cd "$root" && env K8S_LIB_ROOT="$root" COLORS_PAR_WORKDIR="$tmp/$variant" "$@" \
+  (cd "$root/green" && env K8S_LIB_ROOT="$root" COLORS_PAR_WORKDIR="$tmp/$variant" "$@" \
     ./green build -f "$state" >/dev/null)
   if [ "$accept" = 1 ]; then
     rm -rf "$goldens/$variant"
@@ -64,7 +64,7 @@ grep -q 'path: "./clusters/k8s-digitalocean"' "$base/k8s-ansible-remote/gitops.y
 
 delete="$base/k8s-ansible-remote/delete.yml"
 grep -q 'app.kubernetes.io/name=ingress-nginx' "$delete"
-grep -q 'k8s/ansible-remote' <(cd "$root" && bb -e '(require (quote io.github.getcolors.k8s.workflow)) (print io.github.getcolors.k8s.workflow/side-effecting-steps)')
+grep -q 'k8s/ansible-remote' <(cd "$root/green" && bb -e '(require (quote io.github.getcolors.k8s.workflow)) (print io.github.getcolors.k8s.workflow/side-effecting-steps)')
 
 acceptance="$base/k8s-acceptance/acceptance.sh"
 grep -q 'expected exactly two Kubernetes nodes' "$acceptance"

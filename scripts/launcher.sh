@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
+# The launchers are the files here that are copied out and run somewhere else,
+# so their interesting behaviour happens in environments this checkout does not
+# contain: no bb.edn beside them, no k8s on the classpath, an unstamped pin.
+# `bb test` cannot reach any of that — it runs inside the checkout, where
+# green/bb.edn local-roots k8s to the working tree, which is the one path on
+# which none of the resolution logic runs. Every failure this catches is
+# silent: the launcher still starts and still renders, it just resolves the
+# wrong thing.
+
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 launcher="$root/skills/package-k8s-green/green"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
@@ -46,6 +56,24 @@ done
 grep -q 'io.github.getcolors.k8s.operator/run' "$launcher" || fail 'operator commands bypass tested code'
 ok 'lifecycle and SSH-backed kubectl commands are dispatchable'
 
-[ -L "$root/green" ] && [ "$(readlink "$root/green")" = skills/package-k8s-green/green ] || fail 'root green is not the payload symlink'
-ok 'root launcher is the payload symlink'
+[ -L "$root/green/green" ] && [ "$(readlink "$root/green/green")" = ../skills/package-k8s-green/green ] || fail 'green/green is not the payload symlink'
+[ -L "$root/red/red" ] && [ "$(readlink "$root/red/red")" = ../skills/package-k8s-red/red ] || fail 'red/red is not the payload symlink'
+[ -L "$root/blue/blue" ] && [ "$(readlink "$root/blue/blue")" = ../skills/package-k8s-blue/blue ] || fail 'blue/blue is not the payload symlink'
+ok 'each colour dir symlinks its skill payload'
+
+# The red and blue payloads refuse an unpinned standalone copy the same way.
+for colour in red blue; do
+  payload="$root/skills/package-k8s-$colour/$colour"
+  if grep -qE '"package-k8s-red": null,|^# dependencies = \[\]$' "$payload"; then
+    cp "$payload" "$tmp/$colour"
+    chmod +x "$tmp/$colour"
+    out=$( (cd "$tmp" && "./$colour" build 2>&1) || true )
+    grep -q 'K8S_LIB_ROOT' <<<"$out" ||
+      fail "an unpinned $colour payload must name K8S_LIB_ROOT; got: $out"
+    ok "an unpinned $colour payload explains itself"
+  else
+    ok "$colour payload is pinned to a real commit"
+  fi
+done
+
 echo "launcher: $checks checks passed"

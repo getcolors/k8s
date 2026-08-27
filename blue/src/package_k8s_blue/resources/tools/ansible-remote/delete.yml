@@ -1,0 +1,38 @@
+---
+- name: Remove Kubernetes-managed cloud resources before destroying nodes
+  hosts: control_plane
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Confirm Kubernetes API is reachable
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf get --raw=/readyz
+      changed_when: false
+
+    - name: Delete the GitOps Kustomization and prune its inventory
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n flux-system
+        delete kustomization colors-app --ignore-not-found=true
+        --wait=true --timeout=600s
+      changed_when: true
+
+    - name: Explicitly remove ingress LoadBalancer service
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n ingress-nginx
+        delete service
+        --selector=app.kubernetes.io/component=controller,app.kubernetes.io/name=ingress-nginx
+        --ignore-not-found=true --wait=true --timeout=600s
+      changed_when: true
+
+    - name: Remove ingress namespace
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf
+        delete namespace ingress-nginx --ignore-not-found=true
+        --wait=true --timeout=600s
+      changed_when: true
+
+    - name: Delete the GitOps source
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n flux-system
+        delete gitrepository colors-app --ignore-not-found=true
+      changed_when: true

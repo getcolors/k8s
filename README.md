@@ -1,26 +1,35 @@
 # k8s
 
-A green-only Package Skill for a compact kubeadm Kubernetes cluster on
-DigitalOcean: one control plane, one worker, Flannel networking, DigitalOcean
-cloud-controller integration, Flux, DNS/TLS, and end-to-end acceptance.
+A compact kubeadm Kubernetes cluster on DigitalOcean, as a tri-colour Package
+Skill (green, red, blue): one control plane, one worker, Flannel networking,
+DigitalOcean cloud-controller integration, Flux, DNS/TLS, and end-to-end
+acceptance.
+
+The three implementations render byte-identical output: canonical Clojure in
+`green/`, TypeScript/Bun in `red/`, and Python/uv in `blue/`, with
+`scripts/parity.sh` as the cross-colour net.
 
 ```sh
-./green build
-./green create --dry-run
-./green create
-./green kubectl get nodes
-./green delete
+./green build                # render .colors/<profile>/; contacts nothing
+./green create --dry-run     # walk the DAG; touches nothing
+./green create               # provision kubeadm, Flannel, CCM, and Flux
+./green kubectl get nodes    # run kubectl securely over SSH
+./green delete               # protected unless explicitly authorized
 ```
 
-## Install
+`./red` and `./blue` accept the same verbs.
+
+## Install into a project
 
 ```sh
-npx skills add getcolors/k8s
+npx skills add getcolors/k8s --skill package-k8s-green
 cp .agents/skills/package-k8s-green/green green
 chmod +x green
 ```
 
-The root launcher is a copy in deployments; re-copy it after each skill update.
+The root launcher is a copy. Re-copy it after `npx skills update -p`. The red
+and blue skills install the same way with their own payload names.
+
 Desired state is the flat, non-secret `colors.yml` documented in
 [`references/configuration.md`](skills/package-k8s-green/references/configuration.md).
 Credentials live in ignored `.envrc.private` exports named `COLORS_PAR_*`.
@@ -34,9 +43,15 @@ Kubernetes-managed load balancer before destroying the VPC and Droplets.
 ## Development
 
 ```sh
-bb test
-bb golden
+cd green && bb test
+cd green && bb golden
+cd red && bun test && bun run typecheck
+cd blue && uv run pytest
+./scripts/parity.sh            # three colours, both state backends, byte for byte
 ./scripts/launcher.sh
 ```
 
 Inspect golden changes before accepting them. Tests never provision resources.
+The package depends only on the SDK in every colour; the golden render guards
+its firewall, state-key, and no-rendered-secret invariants, and
+`scripts/parity.sh` is the net across colours.

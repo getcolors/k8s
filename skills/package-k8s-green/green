@@ -11,8 +11,8 @@
 ;; cloud resources, and overriding it from the environment can only point k8s
 ;; at another project's state.
 ;;
-;; This file is both the skill payload and the repository entry point — ./green
-;; in the project root is a symlink to it. It deliberately holds no logic of its
+;; This file is both the skill payload and the repository entry point — green/green
+;; in the repository is a symlink to it. It deliberately holds no logic of its
 ;; own: validation, the graph and the steps all live in the `k8s` library,
 ;; where the test suite reaches them. A copied payload is the one place in this
 ;; project where code cannot be tested, so nothing that can live elsewhere
@@ -50,7 +50,7 @@
 ;; cannot resolve its own library says so rather than inventing a SHA or
 ;; silently falling back to whatever is lying around. `bb pin` refuses to stamp
 ;; a dirty or unpushed HEAD for the same reason.
-(def ^:private k8s-sha "5517a0e8a49bff230aaeb4b04b6fc6d53a6ff203")
+(def ^:private k8s-sha nil)
 
 (def ^:private k8s-git-url "https://github.com/getcolors/k8s.git")
 (def ^:private green-git-url "https://github.com/getcolors/green.git")
@@ -58,7 +58,7 @@
 (defn- lib-coord
   [env-var url sha deps-root]
   (if-let [root (System/getenv env-var)]
-    {:local/root root}
+    {:local/root (if deps-root (str (io/file root deps-root)) root)}
     (when sha
       (cond-> {:git/url url :git/sha sha}
         deps-root (assoc :deps/root deps-root)))))
@@ -68,7 +68,7 @@
 
 (def ^:private bootstrap-error
   (when (and (System/getProperty "babashka.version") (not resolved?))
-    (let [k8s (lib-coord "K8S_LIB_ROOT" k8s-git-url k8s-sha nil)
+    (let [k8s (lib-coord "K8S_LIB_ROOT" k8s-git-url k8s-sha "green")
           green (lib-coord "GREEN_LIB_ROOT" green-git-url nil nil)]
       (if-not k8s
         (str "this launcher carries no k8s pin.\n"
