@@ -90,11 +90,18 @@
         update_cache: true
         allow_downgrade: true
 
+    # dpkg_selections has no lock_timeout of its own, so it retries: the lock
+    # is held by unattended-upgrades minutes after first boot (seen live on
+    # 2026-09-05), and it finishes on its own.
     - name: Hold Kubernetes packages
       ansible.builtin.dpkg_selections:
         name: "{{ item }}"
         selection: hold
       loop: [kubeadm, kubelet, kubectl]
+      register: k8s_held
+      until: k8s_held is not failed
+      retries: 30
+      delay: 10
 
     - name: Create containerd configuration directory
       ansible.builtin.file:
