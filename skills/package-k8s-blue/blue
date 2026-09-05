@@ -4,7 +4,7 @@
 # dependencies = ["package-k8s-blue", "blue"]
 #
 # [tool.uv.sources]
-# package-k8s-blue = { git = "https://github.com/getcolors/k8s.git", rev = "a5d977fa97fa70b592bf778b634c61813e13f6fd", subdirectory = "blue" }
+# package-k8s-blue = { git = "https://github.com/getcolors/k8s.git", rev = "e46874ee5aeee3ee07f276d959f8cbbd1873db50", subdirectory = "blue" }
 # blue = { git = "https://github.com/getcolors/blue.git", rev = "290f313ead5ca162875c33a049c880da017eae09" }
 #
 # [tool.uv]
