@@ -9,6 +9,7 @@ import { parName } from "red/cli";
 import type { Registry } from "red/providers";
 import type { Opts } from "red/workflow";
 import { computeCluster } from "package-once-red";
+import { onceSsh } from "./once.ts";
 
 // provider-compute -> what that choice implies: the non-secret keys the
 // template interpolates, the credentials it needs through COLORS_PAR_*, the
@@ -17,14 +18,16 @@ import { computeCluster } from "package-once-red";
 // on DigitalOcean, sized by `digitalocean-vpc-cidr`. The keys of this map are
 // the advertised providers.
 //
-// `digitalocean-ssh-key-fingerprint` stays a required literal: the SSH Keypair
-// Standard's keygen mode is a separate adoption.
+// `digitalocean-ssh-keys` — ONCE's machine-key key for DigitalOcean, which took
+// over from this package's own `digitalocean-ssh-key-fingerprint` — is
+// deliberately absent from `required`: per the SSH Keypair Standard its absence
+// selects keygen mode, and its presence (an id or a fingerprint) is the opt-out
+// that passes the operator's key through untouched.
 export const computeProviders: computeCluster.ClusterRegistry = {
   digitalocean: {
     required: ["digitalocean-name", "digitalocean-region",
                "digitalocean-control-plane-size",
                "digitalocean-worker-size", "digitalocean-image",
-               "digitalocean-ssh-key-fingerprint",
                "digitalocean-vpc-cidr",
                "digitalocean-ssh-sources",
                "digitalocean-api-sources"],
@@ -101,6 +104,13 @@ export function placeholder(value: unknown): boolean {
     (typeof value === "string" && (!value.trim() || value.toUpperCase() === "REPLACE_ME"));
 }
 
+// Whether this deployment owns its machine keypair: `digitalocean-ssh-keys` is
+// absent. Delegates to ONCE, the standard's reference implementation, so one
+// rule decides it everywhere.
+export function keygen(opts: Opts): boolean {
+  return onceSsh.keygen(opts);
+}
+
 function entry(opts: Opts, slot: string): ProviderEntry | undefined {
   return (providers as Record<string, Record<string, ProviderEntry>>)[slot]?.[String(opts[slot])];
 }
@@ -169,6 +179,12 @@ export function stateErrors(opts: Opts): string[] {
     if (!entry(opts, slot)) {
       errors.push(`unsupported :${slot} ${prStr(opts[slot])}`);
     }
+  }
+  // The one desired-state migration the keypair adoption makes: the key moved
+  // to the standard's name. Refused by name rather than ignored, so an operator
+  // sees the rename instead of a silently generated key.
+  if ("digitalocean-ssh-key-fingerprint" in opts) {
+    errors.push(":digitalocean-ssh-key-fingerprint is now :digitalocean-ssh-keys; rename it in colors.yml, or leave it out so the deployment owns its keypair");
   }
   if (opts["kubernetes-distribution"] !== "kubeadm") {
     errors.push(":kubernetes-distribution must be kubeadm");

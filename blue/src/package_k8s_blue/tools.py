@@ -16,7 +16,7 @@ from blue.scaffold import PRESERVE_JINJA_DELIMITERS, content_spec, scaffold
 from blue.workflow import StepError, failed
 from package_once_blue import compute_cluster as cluster
 
-from . import utils, validate
+from . import ssh, ssh_config, utils, validate
 
 infrastructure_tool = "k8s-infrastructure"
 ansible_local_tool = "k8s-ansible-local"
@@ -56,6 +56,9 @@ def _compact_json(value) -> str:
 
 
 def infrastructure_specs(opts: dict) -> list[dict]:
+    # The machine-key paths are filled here as well as in preflight, so the
+    # template renders the same bytes whichever step scaffolds it.
+    opts = ssh.with_machine_key(opts)
     dir = tool_dir(opts, infrastructure_tool)
     data = {**opts,
             "digitalocean-ssh-sources-json":
@@ -205,10 +208,15 @@ async def load_infrastructure_step(opts: dict) -> dict:
 
 def data_fn(opts: dict) -> dict:
     """Complete deterministic template data for build as well as create."""
+    opts = ssh.with_machine_key(opts)
     adopted = opts.get("once/cluster") or {}
     return {**opts,
             "digitalocean_vpc_id": adopted.get("vpc_id") or fallback_vpc_id,
             "host-alias": utils.host_alias(opts),
+            # Only what a `build` genuinely knows: whether the package owns the
+            # key, and where the local play should point the identity file.
+            "ssh-keygen": validate.keygen(opts),
+            "ssh-config-identity-file": ssh_config.identity_file(opts),
             "kubernetes-minor": utils.kubernetes_minor(opts.get("kubernetes-version")),
             "kubernetes-package-version":
             utils.kubernetes_package_version(opts.get("kubernetes-version"))}
@@ -265,11 +273,18 @@ def _pretty(value, indent=0):
 def inventory(opts: dict) -> str:
     """The remote play's inventory: the control plane and the workers, each
     node under its own name, from `nodes`."""
+    opts = ssh.with_machine_key(opts)
     all_nodes = nodes(opts)
 
     def host(n: dict) -> dict:
-        return {"ansible_host": n.get("ip"), "ansible_user": n.get("user"),
-                "private_ip": n.get("vpc_ip")}
+        # In keygen mode nothing guarantees an agent holds the generated key,
+        # so the play is told which one to use; opt-out keeps the operator's
+        # own arrangements, as it always did.
+        entry = {"ansible_host": n.get("ip"), "ansible_user": n.get("user"),
+                 "private_ip": n.get("vpc_ip")}
+        if validate.keygen(opts):
+            entry["ansible_ssh_private_key_file"] = opts.get("ssh-private-key-path")
+        return entry
 
     def hosts(role: str) -> dict:
         return dict(sorted((n["name"], host(n)) for n in all_nodes if n.get("role") == role))
@@ -300,6 +315,7 @@ async def ansible_local_step(opts: dict) -> dict:
         playbooks={"create": "main.yml", "delete": "main.yml"},
         extra_vars={"host_alias": data["host-alias"],
                     "ip": entry_ip(opts),
+                    "user": "root",
                     "block_state": "absent" if delete else "present"})
 
 

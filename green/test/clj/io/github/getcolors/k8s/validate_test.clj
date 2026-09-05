@@ -21,7 +21,6 @@
    :digitalocean-control-plane-size "s-2vcpu-4gb"
    :digitalocean-worker-size "s-2vcpu-4gb"
    :digitalocean-image "ubuntu-24-04-x64"
-   :digitalocean-ssh-key-fingerprint "fingerprint"
    :digitalocean-vpc-cidr "10.20.0.0/20"
    :digitalocean-ssh-sources ["203.0.113.10/32"]
    :digitalocean-api-sources ["203.0.113.10/32"]
@@ -29,11 +28,26 @@
    :external-dns-owner-id "k8s-test"
    :cert-manager-acme-environment "production"})
 
+(def optout
+  "The opt-out twin: an operator-registered key, by id or fingerprint."
+  (assoc base :digitalocean-ssh-keys "fingerprint"))
+
 (defn- matching [opts re]
   (filter #(re-find re %) (validate/state-errors opts)))
 
 (deftest complete-state-is-valid
   (is (= [] (validate/state-errors base))))
+
+(deftest both-keypair-modes-are-renderable-and-the-old-key-name-is-refused
+  ;; The SSH Keypair Standard has two modes and conformance means both hold.
+  (is (= [] (validate/state-errors optout)))
+  (is (validate/keygen? base))
+  (is (not (validate/keygen? optout)))
+  (is (empty? (matching base #"digitalocean-ssh-keys"))
+      "the machine key is never required: its absence is keygen mode")
+  (is (some #{":digitalocean-ssh-key-fingerprint is now :digitalocean-ssh-keys; rename it in colors.yml, or leave it out so the deployment owns its keypair"}
+            (validate/state-errors (assoc base :digitalocean-ssh-key-fingerprint "fingerprint")))
+      "the one desired-state migration: the key moved to the standard's name"))
 
 (deftest reports-all-missing-and-invalid-values
   (let [errors (validate/state-errors

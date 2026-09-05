@@ -26,8 +26,13 @@ Neither is rendered.
   `digitalocean-cloud-controller-version` as `vMAJOR.MINOR.PATCH`.
 - Kubernetes: kubeadm, Flannel, pod/service CIDRs, one control plane, one worker.
 - GitOps: public HTTPS `repository`, branch, and `./`-relative path.
-- DigitalOcean: name, region, both sizes, Ubuntu image, existing SSH-key
-  fingerprint, deployment-owned VPC CIDR, and administrative source CIDRs.
+- DigitalOcean: name, region, both sizes, Ubuntu image, deployment-owned VPC
+  CIDR, and administrative source CIDRs. `digitalocean-ssh-keys` is optional:
+  leave it out and the deployment owns its keypair (`create` generates
+  `~/.ssh/<profile>` and registers it under the profile's name; `delete`
+  removes it last); supply an id or fingerprint already registered on the
+  account to opt out. It replaced `digitalocean-ssh-key-fingerprint`, which is
+  now refused by name.
 - DNS/TLS: application host, Cloudflare zone, ExternalDNS owner ID, and ACME
   environment.
 

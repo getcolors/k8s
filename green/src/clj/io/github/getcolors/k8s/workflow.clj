@@ -7,6 +7,8 @@
             [green.progress :as progress]
             [green.tofu :as tofu]
             [green.workflow :as wf]
+            [io.github.getcolors.k8s.ssh :as ssh]
+            [io.github.getcolors.k8s.ssh-config :as ssh-config]
             [io.github.getcolors.k8s.tools :as tools]
             [io.github.getcolors.k8s.validate :as validate]
             [io.github.getcolors.once.compute-cluster :as cluster]))
@@ -59,7 +61,23 @@
              (fn [opts _ {:keys [event real?]}]
                (when (and real? (= :delete event) (:compute-prevent-destroy opts))
                  [(str "compute destruction is protected; set "
-                       (green-cli/par-name :compute-prevent-destroy) "=false for this delete")]))]}
+                       (green-cli/par-name :compute-prevent-destroy) "=false for this delete")]))]
+            :after-validate
+            ;; The machine key's create matrix and the DigitalOcean preflight
+            ;; run before any template is rendered: an unowned key on disk or
+            ;; at the provider stops the run while stopping is still free.
+            ;; Every other event fills the same template values — a destroy
+            ;; renders before it destroys — but checks no key, because the
+            ;; delete's key cleanup runs after the compute destroy.
+            (fn [opts _ {:keys [event real?]}]
+              (if (and real? (= :create event))
+                (let [opts (ssh/ensure-key! opts (fn [_] (:params state)))]
+                  (if (wf/failed? opts)
+                    opts
+                    (let [opts (ssh/preflight! (ssh/with-machine-key opts))
+                          opts (if (wf/failed? opts) opts (ssh-config/preflight! opts))]
+                      (if (wf/failed? opts) opts (assoc opts :green/exit 0)))))
+                (assoc (ssh/with-machine-key opts) :green/exit 0)))}
       env))))
 
 (defn wire-fn [step run-opts]
@@ -69,7 +87,11 @@
       :k8s/load-infrastructure [tools/load-infrastructure-step :k8s/ansible-remote]
       :k8s/ansible-remote [tools/ansible-remote-step :k8s/ansible-local]
       :k8s/ansible-local [tools/ansible-local-step :k8s/infrastructure]
-      :k8s/infrastructure [tools/infrastructure-step :k8s/generated-cleanup]
+      ;; The keypair goes after the compute destroy (ssh-keypair.md §3.3): a
+      ;; key that predeceases its hosts locks the operator out of nodes that
+      ;; still exist.
+      :k8s/infrastructure [tools/infrastructure-step :k8s/ssh-cleanup]
+      :k8s/ssh-cleanup [ssh/cleanup-step :k8s/generated-cleanup]
       :k8s/generated-cleanup [tools/generated-cleanup-step])
     (case step
       :k8s/start [start-step :k8s/infrastructure]
@@ -85,7 +107,7 @@
 
 (def side-effecting-steps
   [:k8s/load-infrastructure :k8s/infrastructure :k8s/ansible-local
-   :k8s/ansible-remote :k8s/acceptance :k8s/generated-cleanup])
+   :k8s/ansible-remote :k8s/acceptance :k8s/ssh-cleanup :k8s/generated-cleanup])
 
 (def workflow
   (-> (wf/workflow {:start :k8s/start :wire-fn wire-fn})

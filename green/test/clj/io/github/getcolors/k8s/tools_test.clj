@@ -50,6 +50,19 @@
            (get-in parsed ["all" "children" "workers" "hosts"
                            "k8s-test-worker-1" "ansible_host"])))))
 
+(deftest the-inventory-names-the-generated-key-in-keygen-mode-only
+  ;; On a build the placeholder; opt-out keeps the operator's own arrangements.
+  (let [built (json/parse-string (tools/inventory (assoc vt/base :once/cluster cluster :green/event :build)))
+        opted-out (json/parse-string (tools/inventory (assoc vt/optout :once/cluster cluster)))]
+    (is (= "/home/build-placeholder/.ssh/k8s-test"
+           (get-in built ["all" "children" "workers" "hosts" "k8s-test-worker-1" "ansible_ssh_private_key_file"])))
+    (is (not (contains? (get-in opted-out ["all" "children" "workers" "hosts" "k8s-test-worker-1"])
+                        "ansible_ssh_private_key_file"))))
+  (testing "the local play is told the identity file the same way"
+    (is (= "~/.ssh/k8s-test"
+           (:ssh-config-identity-file (:data (first (tools/ansible-local-specs (assoc vt/base :green/event :build)))))))
+    (is (false? (:ssh-keygen (:data (first (tools/ansible-local-specs vt/optout))))))))
+
 (deftest build-renders-fallback-nodes-under-the-packages-own-names
   ;; No adopted cluster: ONCE's fallbacks on TEST-NET-1 and the owned VPC's
   ;; CIDR, named the way the template names the droplets.

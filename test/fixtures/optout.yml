@@ -1,0 +1,47 @@
+# Opt-out fixture: digitalocean-ssh-keys is supplied (the fingerprint the
+# package used to take under digitalocean-ssh-key-fingerprint), so the package
+# touches no key material and renders byte-for-byte what it rendered before
+# the SSH Keypair Standard. The standard has two modes and conformance means
+# both hold, which is why bb golden renders this one too.
+profile: k8s-optout
+workdir: .colors
+provider-compute: digitalocean
+provider-dns: cloudflare
+provider-backend: r2
+compute-prevent-destroy: true
+
+kubernetes-distribution: kubeadm
+kubernetes-version: v1.36.3
+kubernetes-cni: flannel
+flannel-version: v0.28.8
+kubernetes-pod-cidr: 10.244.0.0/16
+kubernetes-service-cidr: 10.96.0.0/12
+control-plane-count: 1
+worker-count: 1
+flux-version: v2.9.3
+digitalocean-cloud-controller-version: v0.1.68
+digitalocean-cloud-controller: true
+
+repository: https://github.com/getcolors/k8s-helloworld.git
+repository-branch: main
+repository-path: ./clusters/k8s-digitalocean
+
+digitalocean-name: k8s-fixture
+digitalocean-region: ams3
+digitalocean-control-plane-size: s-2vcpu-4gb
+digitalocean-worker-size: s-2vcpu-4gb
+digitalocean-image: ubuntu-24-04-x64
+digitalocean-ssh-keys: "c8:24:b0:7f:94:28:37:5a:23:d6:02:8b:b0:00:d7:7a"
+digitalocean-vpc-cidr: 10.20.0.0/20
+digitalocean-ssh-sources:
+  - 203.0.113.10/32
+digitalocean-api-sources:
+  - 203.0.113.10/32
+
+application-host: hello.fixture.example
+cloudflare-zone: fixture.example
+external-dns-owner-id: k8s-fixture
+cert-manager-acme-environment: production
+
+r2-bucket: fixture-state
+r2-endpoint: https://account.r2.cloudflarestorage.com

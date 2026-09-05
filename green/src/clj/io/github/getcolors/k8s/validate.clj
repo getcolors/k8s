@@ -2,7 +2,8 @@
   "Credential-free kubeadm/DigitalOcean desired-state validation."
   (:require [clojure.string :as str]
             [green.cli :as green-cli]
-            [io.github.getcolors.once.compute-cluster :as cluster]))
+            [io.github.getcolors.once.compute-cluster :as cluster]
+            [io.github.getcolors.once.ssh :as once-ssh]))
 
 (def compute-providers
   "provider-compute -> what that choice implies: the non-secret keys the
@@ -12,12 +13,14 @@
   VPC on DigitalOcean, sized by `digitalocean-vpc-cidr`. The keys of this
   map are the advertised providers.
 
-  `digitalocean-ssh-key-fingerprint` stays a required literal: the SSH
-  Keypair Standard's keygen mode is a separate adoption."
+  `digitalocean-ssh-keys` — ONCE's machine-key key for DigitalOcean, which
+  took over from this package's own `digitalocean-ssh-key-fingerprint` — is
+  deliberately absent from `:required`: per the SSH Keypair Standard its
+  absence selects keygen mode, and its presence (an id or a fingerprint) is
+  the opt-out that passes the operator's key through untouched."
   {"digitalocean" {:required [:digitalocean-name :digitalocean-region
                               :digitalocean-control-plane-size
                               :digitalocean-worker-size :digitalocean-image
-                              :digitalocean-ssh-key-fingerprint
                               :digitalocean-vpc-cidr
                               :digitalocean-ssh-sources
                               :digitalocean-api-sources]
@@ -77,6 +80,13 @@
       (and (string? x)
            (or (str/blank? x) (= "REPLACE_ME" (str/upper-case x))))))
 
+(defn keygen?
+  "Whether this deployment owns its machine keypair: `digitalocean-ssh-keys`
+  is absent. Delegates to ONCE, the standard's reference implementation, so
+  one rule decides it everywhere."
+  [opts]
+  (once-ssh/keygen? opts))
+
 (defn entry [opts slot] (get-in providers [slot (get opts slot)]))
 (defn tofu-env [opts slot] (:tofu-env (entry opts slot) {}))
 (defn- slot-keys [opts field] (mapcat #(get (entry opts %) field []) slots))
@@ -123,6 +133,11 @@
           :let [provider (get opts slot)]
           :when (not (contains? (get providers slot) provider))]
       (str "unsupported " slot " " (pr-str provider)))
+    ;; The one desired-state migration the keypair adoption makes: the key
+    ;; moved to the standard's name. Refused by name rather than ignored, so
+    ;; an operator sees the rename instead of a silently generated key.
+    (when (contains? opts :digitalocean-ssh-key-fingerprint)
+      [":digitalocean-ssh-key-fingerprint is now :digitalocean-ssh-keys; rename it in colors.yml, or leave it out so the deployment owns its keypair"])
     (when-not (= "kubeadm" (:kubernetes-distribution opts))
       [":kubernetes-distribution must be kubeadm"])
     (when-not (= "flannel" (:kubernetes-cni opts))

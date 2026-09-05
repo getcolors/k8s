@@ -1,0 +1,355 @@
+---
+- name: Prepare kubeadm nodes
+  hosts: k8s_cluster
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Wait for SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    - name: Gather facts after SSH is ready
+      ansible.builtin.setup:
+
+    - name: Disable swap now
+      ansible.builtin.command: swapoff -a
+      changed_when: false
+
+    - name: Disable swap persistently
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^(\s*[^#]\S+\s+\S+\s+swap\s+.*)$'
+        replace: '# \1'
+
+    - name: Load Kubernetes kernel modules at boot
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k8s.conf
+        mode: "0644"
+        content: |
+          overlay
+          br_netfilter
+
+    - name: Load overlay
+      ansible.builtin.command: modprobe overlay
+      changed_when: false
+
+    - name: Load br_netfilter
+      ansible.builtin.command: modprobe br_netfilter
+      changed_when: false
+
+    - name: Configure Kubernetes networking sysctls
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/99-kubernetes-cri.conf
+        mode: "0644"
+        content: |
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward = 1
+
+    - name: Apply Kubernetes networking sysctls on every converge
+      ansible.builtin.command: sysctl --system
+      changed_when: false
+
+    - name: Install operating-system prerequisites
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - containerd
+          - curl
+          - gpg
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Create apt keyring directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Install the Kubernetes repository signing key
+      ansible.builtin.get_url:
+        url: "https://pkgs.k8s.io/core:/stable:/v1.36/deb/Release.key"
+        dest: /etc/apt/keyrings/kubernetes-apt-keyring.asc
+        mode: "0644"
+
+    - name: Configure the pinned Kubernetes minor repository
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/v1.36/deb/ /"
+        filename: kubernetes
+        state: present
+
+    - name: Install exact Kubernetes packages
+      ansible.builtin.apt:
+        name:
+          - "kubeadm=1.36.3-1.1"
+          - "kubelet=1.36.3-1.1"
+          - "kubectl=1.36.3-1.1"
+        state: present
+        update_cache: true
+        allow_downgrade: true
+
+    - name: Hold Kubernetes packages
+      ansible.builtin.dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop: [kubeadm, kubelet, kubectl]
+
+    - name: Create containerd configuration directory
+      ansible.builtin.file:
+        path: /etc/containerd
+        state: directory
+        mode: "0755"
+
+    - name: Configure containerd with systemd cgroups
+      ansible.builtin.copy:
+        dest: /etc/containerd/config.toml
+        mode: "0644"
+        content: |
+          version = 2
+          [plugins."io.containerd.grpc.v1.cri".containerd]
+            default_runtime_name = "runc"
+          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+            runtime_type = "io.containerd.runc.v2"
+            [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+              SystemdCgroup = true
+      notify: Restart containerd
+
+    - name: Configure kubelet for the external cloud provider and private IP
+      ansible.builtin.copy:
+        dest: /etc/default/kubelet
+        mode: "0644"
+        content: 'KUBELET_EXTRA_ARGS="--cloud-provider=external --node-ip={{ private_ip }}"\n'
+      notify: Restart kubelet
+
+    - name: Flush node handlers before kubeadm
+      ansible.builtin.meta: flush_handlers
+
+    - name: Enable containerd and kubelet
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop: [containerd, kubelet]
+
+  handlers:
+    - name: Restart containerd
+      ansible.builtin.systemd_service:
+        name: containerd
+        state: restarted
+    - name: Restart kubelet
+      ansible.builtin.systemd_service:
+        name: kubelet
+        state: restarted
+
+- name: Initialize the control plane
+  hosts: control_plane
+  become: true
+  tasks:
+    - name: Check whether kubeadm is initialized
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: admin_conf
+
+    - name: Render the non-secret kubeadm configuration
+      ansible.builtin.copy:
+        dest: /root/kubeadm-config.yaml
+        mode: "0600"
+        content: |
+          apiVersion: kubeadm.k8s.io/v1beta4
+          kind: InitConfiguration
+          localAPIEndpoint:
+            advertiseAddress: "{{ private_ip }}"
+            bindPort: 6443
+          nodeRegistration:
+            name: "{{ inventory_hostname }}"
+            kubeletExtraArgs:
+              - name: cloud-provider
+                value: external
+              - name: node-ip
+                value: "{{ private_ip }}"
+          ---
+          apiVersion: kubeadm.k8s.io/v1beta4
+          kind: ClusterConfiguration
+          clusterName: "k8s-fixture"
+          kubernetesVersion: "v1.36.3"
+          controlPlaneEndpoint: "{{ private_ip }}:6443"
+          apiServer:
+            certSANs:
+              - "{{ private_ip }}"
+              - "{{ ansible_host }}"
+          networking:
+            podSubnet: "10.244.0.0/16"
+            serviceSubnet: "10.96.0.0/12"
+
+    - name: Initialize kubeadm
+      ansible.builtin.command: kubeadm init --config /root/kubeadm-config.yaml
+      when: not admin_conf.stat.exists
+      no_log: true
+
+    - name: Download pinned Flannel manifest
+      ansible.builtin.get_url:
+        url: "https://raw.githubusercontent.com/flannel-io/flannel/v0.28.8/Documentation/kube-flannel.yml"
+        dest: "/root/kube-flannel-v0.28.8.yml"
+        mode: "0644"
+
+    - name: Force Flannel onto the private interface
+      ansible.builtin.replace:
+        path: "/root/kube-flannel-v0.28.8.yml"
+        regexp: '(\s+- --kube-subnet-mgr\n)'
+        replace: '\1        - --iface=eth1\n'
+
+    - name: Apply Flannel
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf apply
+        -f /root/kube-flannel-v0.28.8.yml
+      register: flannel_apply
+      changed_when: "'created' in flannel_apply.stdout or 'configured' in flannel_apply.stdout"
+
+    - name: Create DigitalOcean cloud-controller secret without writing it to disk
+      ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f -
+      args:
+        stdin: |
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: digitalocean
+            namespace: kube-system
+          stringData:
+            access-token: "{{ lookup('ansible.builtin.env', 'COLORS_PAR_DO_TOKEN') }}"
+      register: digitalocean_secret
+      changed_when: "'created' in digitalocean_secret.stdout or 'configured' in digitalocean_secret.stdout"
+      no_log: true
+
+    - name: Download pinned DigitalOcean cloud controller
+      ansible.builtin.get_url:
+        url: "https://raw.githubusercontent.com/digitalocean/digitalocean-cloud-controller-manager/v0.1.68/releases/digitalocean-cloud-controller-manager/v0.1.68.yml"
+        dest: "/root/digitalocean-ccm-v0.1.68.yml"
+        mode: "0644"
+
+    - name: Apply DigitalOcean cloud controller
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf apply
+        -f /root/digitalocean-ccm-v0.1.68.yml
+      register: ccm_apply
+      changed_when: "'created' in ccm_apply.stdout or 'configured' in ccm_apply.stdout"
+
+    - name: Bind DigitalOcean load balancers to the deployment-owned VPC
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n kube-system
+        set env deployment/digitalocean-cloud-controller-manager
+        DO_CLUSTER_VPC_ID=00000000-0000-0000-0000-000000000000
+      register: ccm_vpc
+      changed_when: "'updated' in ccm_vpc.stdout"
+
+    - name: Wait for DigitalOcean cloud controller after VPC configuration
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n kube-system
+        rollout status deployment/digitalocean-cloud-controller-manager --timeout=300s
+      changed_when: false
+
+    - name: Generate a short-lived worker join command
+      ansible.builtin.command: kubeadm token create --ttl 30m --print-join-command
+      register: join_command
+      changed_when: false
+      no_log: true
+
+- name: Join workers
+  hosts: workers
+  become: true
+  tasks:
+    - name: Check whether worker already joined
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: kubelet_conf
+
+    - name: Join worker to the cluster
+      ansible.builtin.command: >-
+        {{ hostvars[groups['control_plane'][0]].join_command.stdout }}
+        --node-name {{ inventory_hostname }}
+      when: not kubelet_conf.stat.exists
+      no_log: true
+
+- name: Install Flux and reconcile public GitOps state
+  hosts: control_plane
+  become: true
+  tasks:
+    - name: Wait for both nodes to become Ready
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf wait node --all
+        --for=condition=Ready --timeout=600s
+      changed_when: false
+
+    - name: Download pinned Flux manifest
+      ansible.builtin.get_url:
+        url: "https://github.com/fluxcd/flux2/releases/download/v2.9.3/install.yaml"
+        dest: "/root/flux-install-v2.9.3.yaml"
+        mode: "0644"
+
+    - name: Install Flux controllers
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf apply
+        -f /root/flux-install-v2.9.3.yaml
+      register: flux_apply
+      changed_when: "'created' in flux_apply.stdout or 'configured' in flux_apply.stdout"
+
+    - name: Wait for Flux controllers
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n flux-system
+        wait deployment --all --for=condition=Available --timeout=600s
+      changed_when: false
+
+    - name: Ensure ExternalDNS namespace
+      ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f -
+      args:
+        stdin: |
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: external-dns
+      register: dns_namespace
+      changed_when: "'created' in dns_namespace.stdout"
+      when: '"cloudflare" == "cloudflare"'
+
+    - name: Bootstrap Cloudflare token without writing it to disk
+      ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f -
+      args:
+        stdin: |
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: cloudflare-api-token
+            namespace: external-dns
+          type: Opaque
+          stringData:
+            api-token: "{{ lookup('ansible.builtin.env', 'COLORS_PAR_CLOUDFLARE_API_TOKEN') }}"
+      register: cloudflare_secret
+      changed_when: "'created' in cloudflare_secret.stdout or 'configured' in cloudflare_secret.stdout"
+      no_log: true
+      when: '"cloudflare" == "cloudflare"'
+
+    - name: Copy desired GitOps source
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/gitops.yml"
+        dest: /root/colors-gitops.yml
+        mode: "0644"
+
+    - name: Apply desired GitOps source
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf apply
+        -f /root/colors-gitops.yml
+      register: gitops_apply
+      changed_when: "'created' in gitops_apply.stdout or 'configured' in gitops_apply.stdout"
+
+    - name: Wait for Flux to fetch the repository
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n flux-system
+        wait gitrepository/colors-app --for=condition=Ready --timeout=600s
+      changed_when: false
+
+    - name: Wait for top-level GitOps reconciliation
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n flux-system
+        wait kustomization/colors-app --for=condition=Ready --timeout=900s
+      changed_when: false

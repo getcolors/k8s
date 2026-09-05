@@ -1,3 +1,5 @@
+# Golden fixture, in keygen mode: no digitalocean-ssh-keys, so the package owns
+# the keypair (ssh-keypair.md).
 profile: k8s-fixture
 workdir: .colors
 provider-compute: digitalocean
@@ -26,7 +28,6 @@ digitalocean-region: ams3
 digitalocean-control-plane-size: s-2vcpu-4gb
 digitalocean-worker-size: s-2vcpu-4gb
 digitalocean-image: ubuntu-24-04-x64
-digitalocean-ssh-key-fingerprint: "c8:24:b0:7f:94:28:37:5a:23:d6:02:8b:b0:00:d7:7a"
 digitalocean-vpc-cidr: 10.20.0.0/20
 digitalocean-ssh-sources:
   - 203.0.113.10/32

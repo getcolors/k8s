@@ -4,11 +4,15 @@
  {test {:doc "Run unit tests under Babashka"
         :requires ([clojure.test :as t]
                    [io.github.getcolors.k8s.validate-test]
+                   [io.github.getcolors.k8s.ssh-test]
+                   [io.github.getcolors.k8s.ssh-config-test]
                    [io.github.getcolors.k8s.tools-test]
                    [io.github.getcolors.k8s.workflow-test]
                    [io.github.getcolors.k8s.operator-test])
         :task (let [{:keys [fail error]}
                     (t/run-tests 'io.github.getcolors.k8s.validate-test
+                                 'io.github.getcolors.k8s.ssh-test
+                                 'io.github.getcolors.k8s.ssh-config-test
                                  'io.github.getcolors.k8s.tools-test
                                  'io.github.getcolors.k8s.workflow-test
                                  'io.github.getcolors.k8s.operator-test)]

@@ -8,10 +8,10 @@ import os
 from blue import dry_run, progress, tofu
 from blue.cli import par_name, read_pars
 from blue.lifecycle import preflight
-from blue.workflow import advice_add, workflow
+from blue.workflow import advice_add, failed, workflow
 from package_once_blue import compute_cluster as cluster
 
-from . import tools, validate
+from . import ssh, ssh_config, tools, validate
 
 LIFECYCLE_EVENTS = ("create", "delete")
 
@@ -52,8 +52,32 @@ async def start_step(opts: dict, env: dict | None = None) -> dict:
     context = {"event": overlaid.get("blue/event"), "real": not overlaid.get("blue/dry-run")}
     state = (await cluster.read_state(overlaid, tools.state_output)
              if _lifecycle_event(context) else {})
+
+    # The machine key's create matrix and the DigitalOcean preflight run
+    # before any template is rendered: an unowned key on disk or at the
+    # provider stops the run while stopping is still free. Every other event
+    # fills the same template values — a destroy renders before it destroys —
+    # but checks no key, because the delete's key cleanup runs after the
+    # compute destroy.
+    async def after(o, _env, ctx):
+        if ctx["real"] and ctx["event"] == "create":
+            async def recorded(_opts):
+                return state.get("params")
+            o = await ssh.ensure_key(o, recorded)
+            if failed(o):
+                return o
+            o = ssh.preflight(ssh.with_machine_key(o))
+            if failed(o):
+                return o
+            o = ssh_config.preflight(o)
+            if failed(o):
+                return o
+            return {**o, "blue/exit": 0}
+        return {**ssh.with_machine_key(o), "blue/exit": 0}
+
     return await preflight(
         opts, defaults=DEFAULTS, overlay=read_pars, env=env,
+        after_validate=after,
         validators=[
             lambda _o, e, _c: validate.env_errors(e),
             lambda o, _e, _c: validate.state_errors(o),
@@ -74,7 +98,11 @@ def wire_fn(step: str, run_opts: dict):
             "k8s/load-infrastructure": (tools.load_infrastructure_step, "k8s/ansible-remote"),
             "k8s/ansible-remote": (tools.ansible_remote_step, "k8s/ansible-local"),
             "k8s/ansible-local": (tools.ansible_local_step, "k8s/infrastructure"),
-            "k8s/infrastructure": (tools.infrastructure_step, "k8s/generated-cleanup"),
+            # The keypair goes after the compute destroy (ssh-keypair.md §3.3):
+            # a key that predeceases its hosts locks the operator out of nodes
+            # that still exist.
+            "k8s/infrastructure": (tools.infrastructure_step, "k8s/ssh-cleanup"),
+            "k8s/ssh-cleanup": (ssh.cleanup_step, "k8s/generated-cleanup"),
             "k8s/generated-cleanup": (tools.generated_cleanup_step,),
         }.get(step)
     return {
@@ -95,7 +123,7 @@ def backend_advice(tool: str):
 
 side_effecting_steps = ["k8s/load-infrastructure", "k8s/infrastructure",
                         "k8s/ansible-local", "k8s/ansible-remote",
-                        "k8s/acceptance", "k8s/generated-cleanup"]
+                        "k8s/acceptance", "k8s/ssh-cleanup", "k8s/generated-cleanup"]
 
 
 def create_workflow():

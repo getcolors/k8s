@@ -1,0 +1,59 @@
+---
+# K8s's own copy of the local stage, per standards/ssh-config.md §7.
+#
+# It writes into ~/.ssh/config, a file the operator shares with every other
+# host they reach. Reusing another package's play would let an unrelated
+# upstream change — an added ProxyJump, a different host-key policy — rewrite
+# that file at pin-bump time, in a repository nobody was working in. Three
+# files against that exposure is the right trade.
+#
+# The variables here are Ansible's, not Selmer's: host_alias, ip, user and
+# block_state arrive as extra-vars at execution time, so `build` renders the
+# same bytes whether or not the machine exists and the goldens carry no
+# address (§6). The one Selmer conditional is the IdentityFile pair, because
+# whether the package owns a key is desired state that a build does know.
+- name: Manage local kubeadm cluster access
+  hosts: local
+  tasks:
+    # K8s used to prepend its package name to the marker and hardcode the
+    # user. The standard's marker carries the alias alone, and a new marker
+    # cannot see a block written under the old one — a converge would leave
+    # the old stanza in place and add a second Host block above it, with the
+    # stale one sitting there misleading whoever read the file next. So the
+    # old block is removed before the new one is written (§8). This task and
+    # the superseded markers in `ssh_config.clj` are retired together, one
+    # pin cycle from now.
+    - name: Remove the superseded {{ host_alias }} block
+      ansible.builtin.blockinfile:
+        path: ~/.ssh/config
+        marker: "# {mark} k8s {{ host_alias }} ANSIBLE MANAGED BLOCK"
+        state: absent
+        create: true
+        mode: "0600"
+
+    - name: Manage SSH access for {{ host_alias }}
+      ansible.builtin.blockinfile:
+        path: ~/.ssh/config
+        # The alias alone. The profile is <package>-<suffix>, so it already
+        # names the package; two packages sharing one profile would be fighting
+        # over ~/.ssh/<profile> long before they reached this file.
+        marker: "# {mark} {{ host_alias }} ANSIBLE MANAGED BLOCK"
+        state: "{{ block_state | default('present') }}"
+        create: true
+        mode: "0600"
+        # ssh_config takes the first value it obtains, and blockinfile appends.
+        # A Host * stanza above this block would win on User and IdentityFile
+        # and connect as the wrong user with the wrong key, so the block goes
+        # first (§5). BOF rather than a regex on purpose: blockinfile's
+        # insertbefore anchors on the *last* match, which is the wrong end of
+        # the file, and it has no firstmatch. Options standing above the first
+        # Host line would be captured into this stanza by a BOF insert, so the
+        # package refuses to run against such a file rather than rewriting it.
+        insertbefore: BOF
+        block: |
+          Host {{ host_alias }}
+              HostName {{ ip }}
+              User {{ user }}
+              Port 22
+              StrictHostKeyChecking accept-new
+              ForwardAgent no

@@ -24,15 +24,27 @@ resource "digitalocean_vpc" "cluster" {
   lifecycle { prevent_destroy = <{ compute-prevent-destroy }> }
 }
 
-resource "digitalocean_droplet" "control_plane" {
+<% if ssh-keygen %># Keygen mode (workspace standards/ssh-keypair.md): the account key is named
+# after the profile and lives in this stack's state, which is what makes its
+# ownership decidable. One key for the cluster, not one per node — the
+# deployment is one thing, and a key per machine would multiply what the
+# standard exists to make singular. Never reference a literal key id here in
+# keygen mode.
+resource "digitalocean_ssh_key" "machine" {
+  name       = "<{ profile }>"
+  public_key = trimspace(file("<{ ssh-public-key-path }>"))
+}
+
+<% endif %>resource "digitalocean_droplet" "control_plane" {
   count    = <{ control-plane-count }>
   name     = "${local.name}-control-plane-${count.index + 1}"
   region   = "<{ digitalocean-region }>"
   size     = "<{ digitalocean-control-plane-size }>"
   image    = "<{ digitalocean-image }>"
   vpc_uuid = digitalocean_vpc.cluster.id
-  ssh_keys = ["<{ digitalocean-ssh-key-fingerprint }>"]
-  tags     = ["colors-k8s", "${local.name}-control-plane"]
+<% if ssh-keygen %>  ssh_keys = [digitalocean_ssh_key.machine.id]
+<% else %>  ssh_keys = ["<{ digitalocean-ssh-keys }>"]
+<% endif %>  tags     = ["colors-k8s", "${local.name}-control-plane"]
   lifecycle { prevent_destroy = <{ compute-prevent-destroy }> }
 }
 
@@ -43,8 +55,9 @@ resource "digitalocean_droplet" "worker" {
   size     = "<{ digitalocean-worker-size }>"
   image    = "<{ digitalocean-image }>"
   vpc_uuid = digitalocean_vpc.cluster.id
-  ssh_keys = ["<{ digitalocean-ssh-key-fingerprint }>"]
-  tags     = ["colors-k8s", "${local.name}-worker"]
+<% if ssh-keygen %>  ssh_keys = [digitalocean_ssh_key.machine.id]
+<% else %>  ssh_keys = ["<{ digitalocean-ssh-keys }>"]
+<% endif %>  tags     = ["colors-k8s", "${local.name}-worker"]
   lifecycle { prevent_destroy = <{ compute-prevent-destroy }> }
 }
 
@@ -151,7 +164,8 @@ output "worker_private_ips" {
 output "params" {
   value = {
     provider = "digitalocean"
-    vpc_id   = digitalocean_vpc.cluster.id
+<% if ssh-keygen %>    ssh_key_id = digitalocean_ssh_key.machine.id
+<% endif %>    vpc_id   = digitalocean_vpc.cluster.id
     nodes = concat(
       [{
         index  = 0

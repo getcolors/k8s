@@ -39,4 +39,12 @@ objects before provisioning.
 
 Delete first asks Kubernetes to remove the ingress LoadBalancer and waits for
 its service finalizer, then destroys only the deployment-owned Droplets,
-firewalls, and VPC.
+firewalls, and VPC, and finally removes the deployment's SSH keypair.
+
+The deployment owns its SSH keypair (keygen mode: leave `digitalocean-ssh-keys`
+out of `colors.yml`; the first real `create` generates `~/.ssh/<profile>`,
+registers it at DigitalOcean and names it in the `~/.ssh/config` block that
+`ssh <profile>` and `kubectl` use). Supplying `digitalocean-ssh-keys` — an id
+or fingerprint already on the account, the value this package used to take as
+`digitalocean-ssh-key-fingerprint`, which is now refused by name — opts out and
+uses your own key untouched.

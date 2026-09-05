@@ -18,7 +18,6 @@ base = {
     "digitalocean-control-plane-size": "s-2vcpu-4gb",
     "digitalocean-worker-size": "s-2vcpu-4gb",
     "digitalocean-image": "ubuntu-24-04-x64",
-    "digitalocean-ssh-key-fingerprint": "fingerprint",
     "digitalocean-vpc-cidr": "10.20.0.0/20",
     "digitalocean-ssh-sources": ["203.0.113.10/32"],
     "digitalocean-api-sources": ["203.0.113.10/32"],
@@ -28,12 +27,28 @@ base = {
 }
 
 
+# The opt-out twin: an operator-registered key, by id or fingerprint.
+optout = {**base, "digitalocean-ssh-keys": "fingerprint"}
+
+
 def matching(opts, needle):
     return [e for e in validate.state_errors(opts) if needle in e]
 
 
 def test_complete_state_is_valid():
     assert validate.state_errors(base) == []
+
+
+def test_both_keypair_modes_are_renderable_and_the_old_key_name_is_refused():
+    # The SSH Keypair Standard has two modes and conformance means both hold.
+    assert validate.state_errors(optout) == []
+    assert validate.keygen(base)
+    assert not validate.keygen(optout)
+    # The machine key is never required: its absence is keygen mode.
+    assert not any("digitalocean-ssh-keys" in e for e in validate.state_errors(base))
+    # The one desired-state migration: the key moved to the standard's name.
+    assert ":digitalocean-ssh-key-fingerprint is now :digitalocean-ssh-keys; rename it in colors.yml, or leave it out so the deployment owns its keypair" \
+        in validate.state_errors({**base, "digitalocean-ssh-key-fingerprint": "fingerprint"})
 
 
 def test_reports_all_missing_and_invalid_values():

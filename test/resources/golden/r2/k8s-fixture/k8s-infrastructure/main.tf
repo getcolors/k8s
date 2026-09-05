@@ -24,6 +24,17 @@ resource "digitalocean_vpc" "cluster" {
   lifecycle { prevent_destroy = true }
 }
 
+# Keygen mode (workspace standards/ssh-keypair.md): the account key is named
+# after the profile and lives in this stack's state, which is what makes its
+# ownership decidable. One key for the cluster, not one per node — the
+# deployment is one thing, and a key per machine would multiply what the
+# standard exists to make singular. Never reference a literal key id here in
+# keygen mode.
+resource "digitalocean_ssh_key" "machine" {
+  name       = "k8s-fixture"
+  public_key = trimspace(file("/home/build-placeholder/.ssh/k8s-fixture.pub"))
+}
+
 resource "digitalocean_droplet" "control_plane" {
   count    = 1
   name     = "${local.name}-control-plane-${count.index + 1}"
@@ -31,7 +42,7 @@ resource "digitalocean_droplet" "control_plane" {
   size     = "s-2vcpu-4gb"
   image    = "ubuntu-24-04-x64"
   vpc_uuid = digitalocean_vpc.cluster.id
-  ssh_keys = ["c8:24:b0:7f:94:28:37:5a:23:d6:02:8b:b0:00:d7:7a"]
+  ssh_keys = [digitalocean_ssh_key.machine.id]
   tags     = ["colors-k8s", "${local.name}-control-plane"]
   lifecycle { prevent_destroy = true }
 }
@@ -43,7 +54,7 @@ resource "digitalocean_droplet" "worker" {
   size     = "s-2vcpu-4gb"
   image    = "ubuntu-24-04-x64"
   vpc_uuid = digitalocean_vpc.cluster.id
-  ssh_keys = ["c8:24:b0:7f:94:28:37:5a:23:d6:02:8b:b0:00:d7:7a"]
+  ssh_keys = [digitalocean_ssh_key.machine.id]
   tags     = ["colors-k8s", "${local.name}-worker"]
   lifecycle { prevent_destroy = true }
 }
@@ -151,6 +162,7 @@ output "worker_private_ips" {
 output "params" {
   value = {
     provider = "digitalocean"
+    ssh_key_id = digitalocean_ssh_key.machine.id
     vpc_id   = digitalocean_vpc.cluster.id
     nodes = concat(
       [{

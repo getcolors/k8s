@@ -7,7 +7,7 @@ from blue.scaffold import scaffold
 from blue.workflow import StepError
 from package_k8s_blue import tools
 
-from test_validate import base
+from test_validate import base, optout
 
 # A recorded `params`, as the compute stage outputs it after adoption.
 cluster = {
@@ -56,6 +56,18 @@ def test_inventory_separates_control_plane_and_worker():
             ["k8s-test-control-plane-1"]["private_ip"] == "10.20.0.2")
     assert (parsed["all"]["children"]["workers"]["hosts"]
             ["k8s-test-worker-1"]["ansible_host"] == "203.0.113.2")
+
+
+def test_the_inventory_names_the_generated_key_in_keygen_mode_only():
+    # On a build the placeholder; opt-out keeps the operator's own arrangements.
+    built = json.loads(tools.inventory({**base, "once/cluster": cluster, "blue/event": "build"}))
+    assert (built["all"]["children"]["workers"]["hosts"]["k8s-test-worker-1"]
+            ["ansible_ssh_private_key_file"] == "/home/build-placeholder/.ssh/k8s-test")
+    opted_out = json.loads(tools.inventory({**optout, "once/cluster": cluster}))
+    assert "ansible_ssh_private_key_file" not in opted_out["all"]["children"]["workers"]["hosts"]["k8s-test-worker-1"]
+    # The local play is told the identity file the same way.
+    assert tools.ansible_local_specs({**base, "blue/event": "build"})[0]["data"]["ssh-config-identity-file"] == "~/.ssh/k8s-test"
+    assert tools.ansible_local_specs(optout)[0]["data"]["ssh-keygen"] is False
 
 
 def test_build_renders_fallback_nodes_under_the_packages_own_names():

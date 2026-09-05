@@ -6,8 +6,10 @@ import * as dryRun from "red/dry-run";
 import { preflight, type PreflightContext } from "red/lifecycle";
 import * as progress from "red/progress";
 import * as tofu from "red/tofu";
-import { adviceAdd, workflow, type Opts, type WireDecl } from "red/workflow";
+import { adviceAdd, failed, workflow, type Opts, type WireDecl } from "red/workflow";
 import { compute, computeCluster } from "package-once-red";
+import * as ssh from "./ssh.ts";
+import * as sshConfig from "./ssh-config.ts";
 import * as tools from "./tools.ts";
 import * as validate from "./validate.ts";
 
@@ -71,6 +73,21 @@ export async function startStep(
              `${parName("compute-prevent-destroy")}=false for this delete`]
           : [],
     ],
+    // The machine key's create matrix and the DigitalOcean preflight run before
+    // any template is rendered: an unowned key on disk or at the provider stops
+    // the run while stopping is still free. Every other event fills the same
+    // template values — a destroy renders before it destroys — but checks no
+    // key, because the delete's key cleanup runs after the compute destroy.
+    afterValidate: async (current, _environment, ctx) => {
+      if (ctx.real && ctx.event === "create") {
+        let next = await ssh.ensureKey(current, async () => state.params);
+        if (failed(next)) return next;
+        next = await ssh.preflight(ssh.withMachineKey(next));
+        if (!failed(next)) next = sshConfig.preflight(next);
+        return failed(next) ? next : { ...next, "red/exit": 0 };
+      }
+      return { ...ssh.withMachineKey(current), "red/exit": 0 };
+    },
   }, env);
 }
 
@@ -81,7 +98,11 @@ export function wireFn(step: string, runOpts: Opts): WireDecl | undefined {
       "k8s/load-infrastructure": [tools.loadInfrastructureStep, "k8s/ansible-remote"],
       "k8s/ansible-remote": [tools.ansibleRemoteStep, "k8s/ansible-local"],
       "k8s/ansible-local": [tools.ansibleLocalStep, "k8s/infrastructure"],
-      "k8s/infrastructure": [tools.infrastructureStep, "k8s/generated-cleanup"],
+      // The keypair goes after the compute destroy (ssh-keypair.md §3.3): a
+      // key that predeceases its hosts locks the operator out of nodes that
+      // still exist.
+      "k8s/infrastructure": [tools.infrastructureStep, "k8s/ssh-cleanup"],
+      "k8s/ssh-cleanup": [ssh.cleanupStep, "k8s/generated-cleanup"],
       "k8s/generated-cleanup": [tools.generatedCleanupStep],
     };
     return graph[step];
@@ -106,7 +127,7 @@ export function backendAdvice(tool: string) {
 
 export const sideEffectingSteps = [
   "k8s/load-infrastructure", "k8s/infrastructure", "k8s/ansible-local",
-  "k8s/ansible-remote", "k8s/acceptance", "k8s/generated-cleanup",
+  "k8s/ansible-remote", "k8s/acceptance", "k8s/ssh-cleanup", "k8s/generated-cleanup",
 ];
 
 function create() {

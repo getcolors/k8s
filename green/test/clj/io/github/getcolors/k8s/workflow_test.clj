@@ -3,6 +3,7 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest is]]
             [green.workflow :as wf]
+            [io.github.getcolors.k8s.ssh :as ssh]
             [io.github.getcolors.k8s.tools :as tools]
             [io.github.getcolors.k8s.tools-test :as tt]
             [io.github.getcolors.k8s.validate-test :as vt]
@@ -48,7 +49,20 @@
   (is (= [:k8s/ansible-remote]
          (next-steps :delete :k8s/load-infrastructure)))
   (is (= [:k8s/ansible-local] (next-steps :delete :k8s/ansible-remote)))
-  (is (= [:k8s/infrastructure] (next-steps :delete :k8s/ansible-local))))
+  (is (= [:k8s/infrastructure] (next-steps :delete :k8s/ansible-local)))
+  ;; The keypair goes after the compute destroy (ssh-keypair.md §3.3).
+  (is (= [:k8s/ssh-cleanup] (next-steps :delete :k8s/infrastructure)))
+  (is (= [ssh/cleanup-step :k8s/generated-cleanup]
+         (workflow/wire-fn :k8s/ssh-cleanup {:green/event :delete}))))
+
+(deftest a-build-fills-the-placeholder-key-paths
+  (let [r (start (assoc vt/base :green/event :build))]
+    (is (= 0 (:green/exit r)))
+    (is (= "/home/build-placeholder/.ssh/k8s-test" (:ssh-private-key-path r)))
+    (is (true? (:ssh-keygen r))))
+  (let [r (start (assoc vt/optout :green/event :build))]
+    (is (= 0 (:green/exit r)))
+    (is (nil? (:ssh-private-key-path r)))))
 
 (deftest build-and-dry-run-need-no-credentials-and-never-read-the-state
   ;; A throwing reader proves nothing on these paths reaches the backend.
@@ -59,7 +73,10 @@
 
 (deftest real-lifecycle-needs-secrets-and-delete-override
   (is (= 2 (:green/exit (start (assoc vt/base :green/event :create)))))
-  (is (= 0 (:green/exit (start (assoc vt/base :green/event :create) nil credentials))))
+  ;; The credentialed create runs opted out: in keygen mode a real create
+  ;; generates the machine key, and no test may write into the operator's
+  ;; ~/.ssh.
+  (is (= 0 (:green/exit (start (assoc vt/optout :green/event :create) nil credentials))))
   (is (= 2 (:green/exit (start (assoc vt/base :green/event :delete) nil credentials))))
   (is (= 0 (:green/exit (start (assoc vt/base :green/event :delete) nil
                                (assoc credentials "COLORS_PAR_COMPUTE_PREVENT_DESTROY" "false"))))))

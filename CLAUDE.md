@@ -72,7 +72,25 @@ never enter generated files or GitOps.
 The package keeps its own multi-node DigitalOcean template rather than
 coupling to ONCE's single-server templates, but it delegates the Compute
 Cluster Standard (`workspace/standards/compute-cluster.md`) to ONCE's
-`compute-cluster` namespace in every colour, so it pins ONCE beside the SDK.
+`compute-cluster` namespace in every colour, so it pins ONCE beside the SDK —
+in the three manifests and in the red payload's `PINS` — and it delegates the
+SSH Keypair Standard (`workspace/standards/ssh-keypair.md`) to ONCE's `ssh`
+namespace the same way (`io.github.getcolors.once.ssh`, the unexported
+`red/src/ssh.ts` reached through `red/src/once.ts`, `package_once_blue.ssh`),
+wrapping it with the build placeholder in its own `ssh` module. Keygen mode
+is the absence of `digitalocean-ssh-keys`, the standard's key, which replaced
+this package's `digitalocean-ssh-key-fingerprint`; the old name is refused by
+`state-errors` so the rename is seen, not silently turned into a generated
+key. The `ssh_config` module and the `ansible-local` play are this package's
+own copies of the single-node shape (`workspace/standards/ssh-config.md`
+§7), writing the entry alias alone (`compute-cluster.md` §6 permits it);
+the play's marker moved from `# BEGIN k8s <profile>` to the alias alone, and
+the §8 one-cycle removal task plus the superseded marker in `owned-markers`
+retire together at the next pin cycle. The keypair is removed last on
+delete, after the destroy. The goldens have two fixtures,
+`test/fixtures/colors.yml` (keygen) and `test/fixtures/optout.yml` (opt-out,
+byte-for-byte the pre-standard rendering under its own profile, apart from
+the local stage), each under both state backends.
 The package owns the data and the wiring: the `compute-providers` registry
 with its `:created` network (`digitalocean-vpc-cidr`), the `spec` — roles
 `control-plane` and `worker`, one each, the control plane as the entry —

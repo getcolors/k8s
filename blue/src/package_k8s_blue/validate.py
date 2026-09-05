@@ -12,6 +12,7 @@ import re
 
 from blue.cli import par_name
 from package_once_blue import compute_cluster as cluster
+from package_once_blue import ssh as once_ssh
 
 # provider-compute -> what that choice implies: the non-secret keys the
 # template interpolates, the credentials it needs through COLORS_PAR_*, the
@@ -20,14 +21,16 @@ from package_once_blue import compute_cluster as cluster
 # on DigitalOcean, sized by `digitalocean-vpc-cidr`. The keys of this map are
 # the advertised providers.
 #
-# `digitalocean-ssh-key-fingerprint` stays a required literal: the SSH Keypair
-# Standard's keygen mode is a separate adoption.
+# `digitalocean-ssh-keys` — ONCE's machine-key key for DigitalOcean, which took
+# over from this package's own `digitalocean-ssh-key-fingerprint` — is
+# deliberately absent from `required`: per the SSH Keypair Standard its absence
+# selects keygen mode, and its presence (an id or a fingerprint) is the opt-out
+# that passes the operator's key through untouched.
 compute_providers = {
     "digitalocean": {
         "required": ["digitalocean-name", "digitalocean-region",
                      "digitalocean-control-plane-size",
                      "digitalocean-worker-size", "digitalocean-image",
-                     "digitalocean-ssh-key-fingerprint",
                      "digitalocean-vpc-cidr",
                      "digitalocean-ssh-sources",
                      "digitalocean-api-sources"],
@@ -90,6 +93,13 @@ profile_par = par_name("profile")
 
 def placeholder(x) -> bool:
     return x is None or (isinstance(x, str) and (not x.strip() or x.upper() == "REPLACE_ME"))
+
+
+def keygen(opts: dict) -> bool:
+    """Whether this deployment owns its machine keypair: `digitalocean-ssh-keys`
+    is absent. Delegates to ONCE, the standard's reference implementation, so
+    one rule decides it everywhere."""
+    return once_ssh.keygen(opts)
 
 
 def _entry(opts: dict, slot: str) -> dict | None:
@@ -168,6 +178,11 @@ def state_errors(opts: dict) -> list[str]:
     for slot in _package_slots:
         if _entry(opts, slot) is None:
             errors.append(f"unsupported :{slot} {_pr_str(opts.get(slot))}")
+    # The one desired-state migration the keypair adoption makes: the key moved
+    # to the standard's name. Refused by name rather than ignored, so an operator
+    # sees the rename instead of a silently generated key.
+    if "digitalocean-ssh-key-fingerprint" in opts:
+        errors.append(":digitalocean-ssh-key-fingerprint is now :digitalocean-ssh-keys; rename it in colors.yml, or leave it out so the deployment owns its keypair")
     if opts.get("kubernetes-distribution") != "kubeadm":
         errors.append(":kubernetes-distribution must be kubeadm")
     if opts.get("kubernetes-cni") != "flannel":

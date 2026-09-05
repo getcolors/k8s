@@ -7,6 +7,8 @@ import { runtime } from "red/runtime";
 import { StepError, run as runWorkflow, type Opts } from "red/workflow";
 import { computeCluster } from "package-once-red";
 import * as operator from "../src/operator.ts";
+import * as ssh from "../src/ssh.ts";
+import * as sshConfig from "../src/ssh-config.ts";
 import * as tools from "../src/tools.ts";
 import * as validate from "../src/validate.ts";
 import * as workflow from "../src/workflow.ts";
@@ -41,7 +43,6 @@ const base: Opts = {
   "digitalocean-control-plane-size": "s-2vcpu-4gb",
   "digitalocean-worker-size": "s-2vcpu-4gb",
   "digitalocean-image": "ubuntu-24-04-x64",
-  "digitalocean-ssh-key-fingerprint": "fingerprint",
   "digitalocean-vpc-cidr": "10.20.0.0/20",
   "digitalocean-ssh-sources": ["203.0.113.10/32"],
   "digitalocean-api-sources": ["203.0.113.10/32"],
@@ -50,6 +51,9 @@ const base: Opts = {
   "external-dns-owner-id": "k8s-test",
   "cert-manager-acme-environment": "production",
 };
+
+// The opt-out twin: an operator-registered key, by id or fingerprint.
+const optout: Opts = { ...base, "digitalocean-ssh-keys": "fingerprint" };
 
 const matching = (opts: Opts, re: RegExp): string[] =>
   validate.stateErrors(opts).filter((e) => re.test(e));
@@ -82,6 +86,18 @@ const unreadable = async () => { throw new StepError("tofu output failed: no bac
 describe("validate", () => {
   test("complete state is valid", () => {
     expect(validate.stateErrors(base)).toEqual([]);
+  });
+
+  test("both keypair modes are renderable and the old key name is refused", () => {
+    // The SSH Keypair Standard has two modes and conformance means both hold.
+    expect(validate.stateErrors(optout)).toEqual([]);
+    expect(validate.keygen(base)).toBe(true);
+    expect(validate.keygen(optout)).toBe(false);
+    // The machine key is never required: its absence is keygen mode.
+    expect(validate.stateErrors(base).some((e) => e.includes("digitalocean-ssh-keys"))).toBe(false);
+    // The one desired-state migration: the key moved to the standard's name.
+    expect(validate.stateErrors({ ...base, "digitalocean-ssh-key-fingerprint": "fingerprint" }))
+      .toContain(":digitalocean-ssh-key-fingerprint is now :digitalocean-ssh-keys; rename it in colors.yml, or leave it out so the deployment owns its keypair");
   });
 
   test("reports all missing and invalid values", () => {
@@ -176,6 +192,19 @@ describe("tools", () => {
       .toBe("10.20.0.2");
     expect(parsed.all.children.workers.hosts["k8s-test-worker-1"].ansible_host)
       .toBe("203.0.113.2");
+  });
+
+  test("the inventory names the generated key in keygen mode only", () => {
+    // On a build the placeholder; opt-out keeps the operator's own arrangements.
+    const built = JSON.parse(tools.inventory({ ...base, "once/cluster": cluster, "red/event": "build" }));
+    expect(built.all.children.workers.hosts["k8s-test-worker-1"].ansible_ssh_private_key_file)
+      .toBe("/home/build-placeholder/.ssh/k8s-test");
+    const optedOut = JSON.parse(tools.inventory({ ...optout, "once/cluster": cluster }));
+    expect("ansible_ssh_private_key_file" in optedOut.all.children.workers.hosts["k8s-test-worker-1"]).toBe(false);
+    // The local play is told the identity file the same way.
+    expect((tools.ansibleLocalSpecs({ ...base, "red/event": "build" })[0]!.data as Opts)["ssh-config-identity-file"])
+      .toBe("~/.ssh/k8s-test");
+    expect((tools.ansibleLocalSpecs(optout)[0]!.data as Opts)["ssh-keygen"]).toBe(false);
   });
 
   test("build renders fallback nodes under the package's own names", () => {
@@ -384,6 +413,20 @@ describe("workflow", () => {
     expect(nextSteps("delete", "k8s/load-infrastructure")).toEqual(["k8s/ansible-remote"]);
     expect(nextSteps("delete", "k8s/ansible-remote")).toEqual(["k8s/ansible-local"]);
     expect(nextSteps("delete", "k8s/ansible-local")).toEqual(["k8s/infrastructure"]);
+    // The keypair goes after the compute destroy (ssh-keypair.md §3.3).
+    expect(nextSteps("delete", "k8s/infrastructure")).toEqual(["k8s/ssh-cleanup"]);
+    expect(workflow.wireFn("k8s/ssh-cleanup", { "red/event": "delete" }))
+      .toEqual([ssh.cleanupStep, "k8s/generated-cleanup"]);
+  });
+
+  test("a build fills the placeholder key paths", async () => {
+    const r = await workflow.startStep({ ...base, "red/event": "build" }, {});
+    expect(r["red/exit"]).toBe(0);
+    expect(r["ssh-private-key-path"]).toBe("/home/build-placeholder/.ssh/k8s-test");
+    expect(r["ssh-keygen"]).toBe(true);
+    const o = await workflow.startStep({ ...optout, "red/event": "build" }, {});
+    expect(o["red/exit"]).toBe(0);
+    expect(o["ssh-private-key-path"]).toBeUndefined();
   });
 
   test("build and dry-run need no credentials and never read the state", async () => {
@@ -399,7 +442,10 @@ describe("workflow", () => {
 
   test("real lifecycle needs secrets and delete override", async () => {
     expect((await start({ ...base, "red/event": "create" }))["red/exit"]).toBe(2);
-    expect((await start({ ...base, "red/event": "create" }, undefined, credentials))["red/exit"]).toBe(0);
+    // The credentialed create runs opted out: in keygen mode a real create
+    // generates the machine key, and no test may write into the operator's
+    // ~/.ssh.
+    expect((await start({ ...optout, "red/event": "create" }, undefined, credentials))["red/exit"]).toBe(0);
     expect((await start({ ...base, "red/event": "delete" }, undefined, credentials))["red/exit"]).toBe(2);
     expect((await start({ ...base, "red/event": "delete" }, undefined,
       { ...credentials, COLORS_PAR_COMPUTE_PREVENT_DESTROY: "false" }))["red/exit"]).toBe(0);
@@ -524,5 +570,84 @@ describe("operator", () => {
       () => ({ exit: 0, out: "", err: "" }),
       { COLORS_PAR_PROFILE: "other" });
     expect(result["red/exit"]).toBe(2);
+  });
+});
+
+// --- the machine keypair -----------------------------------------------------
+
+describe("ssh", () => {
+  test("a build never names the operator's home", () => {
+    const opts = ssh.withMachineKey({ ...base, "red/event": "build" });
+    expect(opts["ssh-private-key-path"]).toBe("/home/build-placeholder/.ssh/k8s-test");
+    expect(opts["ssh-public-key-path"]).toBe("/home/build-placeholder/.ssh/k8s-test.pub");
+    // The placeholder lands on the provider's own machine-key key.
+    expect(opts["digitalocean-ssh-keys"]).toBe("/home/build-placeholder/.ssh/k8s-test.pub");
+    expect(String(process.env.HOME)).not.toContain("build-placeholder");
+  });
+
+  test("a dry-run is held to the same rule as a build", () => {
+    expect(ssh.renderedOnly({ "red/event": "build" })).toBe(true);
+    expect(ssh.renderedOnly({ "red/event": "create", "red/dry-run": true })).toBe(true);
+    expect(ssh.renderedOnly({ "red/event": "create" })).toBe(false);
+  });
+
+  test("real events render the real path", () => {
+    const opts = ssh.withMachineKey({ ...base, "red/event": "create" });
+    expect(String(opts["ssh-private-key-path"])).not.toContain("build-placeholder");
+    expect(String(opts["ssh-private-key-path"]).endsWith("/.ssh/k8s-test")).toBe(true);
+  });
+
+  test("opt-out opts pass through untouched", () => {
+    const opts = { ...optout, "red/event": "build" };
+    expect(ssh.withMachineKey(opts)).toEqual(opts);
+  });
+});
+
+// --- ~/.ssh/config -----------------------------------------------------------
+
+describe("ssh-config", () => {
+  test("the alias is the profile and the identity file stays unexpanded", () => {
+    expect(sshConfig.hostAlias(base)).toBe("k8s-test");
+    expect(sshConfig.identityFile(base)).toBe("~/.ssh/k8s-test");
+  });
+
+  test("the superseded package-prefixed block is still ours while the migration is in flight", () => {
+    const old = [
+      "# BEGIN k8s k8s-test ANSIBLE MANAGED BLOCK",
+      "Host k8s-test", "  HostName 1.2.3.4",
+      "# END k8s k8s-test ANSIBLE MANAGED BLOCK",
+    ];
+    expect(sshConfig.foreignStanzaLine(old, "k8s-test")).toBeUndefined();
+    const current = [
+      "# BEGIN k8s-test ANSIBLE MANAGED BLOCK",
+      "Host k8s-test", "  HostName 1.2.3.4",
+      "# END k8s-test ANSIBLE MANAGED BLOCK",
+    ];
+    expect(sshConfig.foreignStanzaLine(current, "k8s-test")).toBeUndefined();
+    expect(sshConfig.foreignStanzaLine(["Host k8s-test", "  HostName 9.9.9.9"], "k8s-test")).toBe(1);
+  });
+
+  test("a global option above the first Host blocks the run", () => {
+    expect(sshConfig.leadingOptionLine(["ServerAliveInterval 60", "Host x"])).toBe(1);
+    expect(sshConfig.leadingOptionLine(["# a comment", "", "Host x", "  User root"])).toBeUndefined();
+  });
+
+  test("the refusal is reported as a failed step", () => {
+    const home = mkdtempSync(join(tmpdir(), "k8s-ssh-config-"));
+    const saved = process.env.HOME;
+    try {
+      process.env.HOME = home;
+      const { mkdirSync } = require("node:fs");
+      mkdirSync(join(home, ".ssh"));
+      writeFileSync(join(home, ".ssh", "config"), "Host k8s-test\n  HostName 9.9.9.9\n");
+      const refused = sshConfig.preflight(base);
+      expect(refused["red/exit"]).toBe(1);
+      expect(String(refused["red/err"])).toContain("k8s-test");
+      writeFileSync(join(home, ".ssh", "config"),
+        "# BEGIN k8s k8s-test ANSIBLE MANAGED BLOCK\nHost k8s-test\n  HostName 1.1.1.1\n# END k8s k8s-test ANSIBLE MANAGED BLOCK\n");
+      expect(sshConfig.preflight(base)["red/exit"] ?? 0).toBe(0);
+    } finally {
+      process.env.HOME = saved;
+    }
   });
 });

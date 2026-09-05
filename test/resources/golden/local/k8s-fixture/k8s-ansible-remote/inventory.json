@@ -6,7 +6,8 @@
           "k8s-fixture-control-plane-1" : {
             "ansible_host" : "192.0.2.10",
             "ansible_user" : "root",
-            "private_ip" : "10.20.0.10"
+            "private_ip" : "10.20.0.10",
+            "ansible_ssh_private_key_file" : "/home/build-placeholder/.ssh/k8s-fixture"
           }
         }
       },
@@ -15,7 +16,8 @@
           "k8s-fixture-worker-1" : {
             "ansible_host" : "192.0.2.11",
             "ansible_user" : "root",
-            "private_ip" : "10.20.0.11"
+            "private_ip" : "10.20.0.11",
+            "ansible_ssh_private_key_file" : "/home/build-placeholder/.ssh/k8s-fixture"
           }
         }
       },

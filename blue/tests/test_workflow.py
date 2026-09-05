@@ -3,10 +3,10 @@ import os
 import pytest
 from blue.workflow import StepError
 from blue.workflow import run as run_workflow
-from package_k8s_blue import tools, workflow
+from package_k8s_blue import ssh, tools, workflow
 
 from test_tools import cluster, without
-from test_validate import base
+from test_validate import base, optout
 
 # The compute state is read once per run, through `tools.state_output`, on a
 # real create or delete. Every lifecycle test stubs it: None is a readable
@@ -50,6 +50,19 @@ def test_delete_loads_state_and_removes_load_balancer_before_infrastructure():
     assert next_steps("delete", "k8s/load-infrastructure") == ("k8s/ansible-remote",)
     assert next_steps("delete", "k8s/ansible-remote") == ("k8s/ansible-local",)
     assert next_steps("delete", "k8s/ansible-local") == ("k8s/infrastructure",)
+    # The keypair goes after the compute destroy (ssh-keypair.md §3.3).
+    assert next_steps("delete", "k8s/infrastructure") == ("k8s/ssh-cleanup",)
+    assert workflow.wire_fn("k8s/ssh-cleanup", {"blue/event": "delete"}) == (ssh.cleanup_step, "k8s/generated-cleanup")
+
+
+async def test_a_build_fills_the_placeholder_key_paths():
+    r = await workflow.start_step({**base, "blue/event": "build"}, {})
+    assert r["blue/exit"] == 0
+    assert r["ssh-private-key-path"] == "/home/build-placeholder/.ssh/k8s-test"
+    assert r["ssh-keygen"] is True
+    o = await workflow.start_step({**optout, "blue/event": "build"}, {})
+    assert o["blue/exit"] == 0
+    assert "ssh-private-key-path" not in o
 
 
 async def start(opts, env=None):
@@ -67,7 +80,10 @@ async def test_build_and_dry_run_need_no_credentials_and_never_read_the_state(un
 async def test_real_lifecycle_needs_secrets_and_delete_override(state):
     state(None)
     assert (await start({**base, "blue/event": "create"}))["blue/exit"] == 2
-    assert (await start({**base, "blue/event": "create"}, CREDENTIALS))["blue/exit"] == 0
+    # The credentialed create runs opted out: in keygen mode a real create
+    # generates the machine key, and no test may write into the operator's
+    # ~/.ssh.
+    assert (await start({**optout, "blue/event": "create"}, CREDENTIALS))["blue/exit"] == 0
     assert (await start({**base, "blue/event": "delete"}, CREDENTIALS))["blue/exit"] == 2
     assert (await start({**base, "blue/event": "delete"},
                         {**CREDENTIALS, "COLORS_PAR_COMPUTE_PREVENT_DESTROY": "false"})

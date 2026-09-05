@@ -9,6 +9,8 @@
             [green.scaffold :as sc]
             [green.tofu :as tofu]
             [green.workflow :as wf]
+            [io.github.getcolors.k8s.ssh :as ssh]
+            [io.github.getcolors.k8s.ssh-config :as ssh-config]
             [io.github.getcolors.k8s.utils :as utils]
             [io.github.getcolors.k8s.validate :as validate]
             [io.github.getcolors.once.compute-cluster :as cluster]))
@@ -34,7 +36,11 @@
                          (conj (vec slots) :provider-backend)))
 
 (defn infrastructure-specs [opts]
-  (let [dir (tool-dir opts infrastructure-tool)
+  ;; The machine-key paths are filled here as well as in preflight, so the
+  ;; template renders the same bytes whichever step scaffolds it — the state
+  ;; reader renders it as a build, and a test may render it alone.
+  (let [opts (ssh/with-machine-key opts)
+        dir (tool-dir opts infrastructure-tool)
         data (assoc opts
                     :digitalocean-ssh-sources-json
                     (json/generate-string (:digitalocean-ssh-sources opts))
@@ -186,20 +192,31 @@
       (cluster/adopt-state validate/spec rendered (:green/event opts) state))))
 
 (defn data-fn [opts]
-  (merge opts
+  (let [opts (ssh/with-machine-key opts)]
+    (merge opts
          {:digitalocean_vpc_id (or (:vpc_id (:once/cluster opts)) fallback-vpc-id)
           :host-alias (utils/host-alias opts)
+          ;; Only what a `build` genuinely knows: whether the package owns the
+          ;; key, and where the local play should point the identity file.
+          :ssh-keygen (validate/keygen? opts)
+          :ssh-config-identity-file (ssh-config/identity-file opts)
           :kubernetes-minor (utils/kubernetes-minor (:kubernetes-version opts))
           :kubernetes-package-version
-          (utils/kubernetes-package-version (:kubernetes-version opts))}))
+          (utils/kubernetes-package-version (:kubernetes-version opts))})))
 
 (defn inventory
   "The remote play's inventory: the control plane and the workers, each
   node under its own name, from `nodes`."
   [opts]
-  (let [nodes (nodes opts)
-        host (fn [n] {:ansible_host (:ip n) :ansible_user (:user n)
-                      :private_ip (:vpc_ip n)})
+  (let [opts (ssh/with-machine-key opts)
+        nodes (nodes opts)
+        ;; In keygen mode nothing guarantees an agent holds the generated key,
+        ;; so the play is told which one to use; opt-out keeps the operator's
+        ;; own arrangements, as it always did.
+        host (fn [n] (cond-> {:ansible_host (:ip n) :ansible_user (:user n)
+                              :private_ip (:vpc_ip n)}
+                       (validate/keygen? opts)
+                       (assoc :ansible_ssh_private_key_file (:ssh-private-key-path opts))))
         hosts (fn [role] (into (sorted-map)
                                (for [n nodes :when (= role (:role n))]
                                  [(:name n) (host n)])))]
@@ -227,6 +244,7 @@
       :playbooks {:create "main.yml" :delete "main.yml"}
       :extra-vars {:host_alias (:host-alias data)
                    :ip (entry-ip opts)
+                   :user "root"
                    :block_state (if delete? "absent" "present")}}
      (ansible-local-specs opts))))
 

@@ -9,6 +9,8 @@ import { runtime, type ExecResult } from "red/runtime";
 import type { Opts } from "red/workflow";
 import { StepError, failed } from "red/workflow";
 import { compute, computeCluster } from "package-once-red";
+import * as ssh from "./ssh.ts";
+import * as sshConfig from "./ssh-config.ts";
 import * as utils from "./utils.ts";
 import * as validate from "./validate.ts";
 
@@ -65,6 +67,9 @@ export function credentialEnv(opts: Opts, ...slots: string[]): Record<string, st
 }
 
 export function infrastructureSpecs(opts: Opts): Spec[] {
+  // The machine-key paths are filled here as well as in preflight, so the
+  // template renders the same bytes whichever step scaffolds it.
+  opts = ssh.withMachineKey(opts);
   const dir = toolDir(opts, infrastructureTool);
   const data: Opts = {
     ...opts,
@@ -214,11 +219,16 @@ export async function loadInfrastructureStep(
 
 // Complete deterministic template data for build as well as create.
 export function dataFn(opts: Opts): Opts {
+  opts = ssh.withMachineKey(opts);
   const cluster = opts["once/cluster"] as Opts | undefined;
   return {
     ...opts,
     digitalocean_vpc_id: cluster?.vpc_id ?? fallbackVpcId,
     "host-alias": utils.hostAlias(opts),
+    // Only what a `build` genuinely knows: whether the package owns the key,
+    // and where the local play should point the identity file.
+    "ssh-keygen": validate.keygen(opts),
+    "ssh-config-identity-file": sshConfig.identityFile(opts),
     "kubernetes-minor": utils.kubernetesMinor(opts["kubernetes-version"]),
     "kubernetes-package-version":
       utils.kubernetesPackageVersion(opts["kubernetes-version"]),
@@ -273,9 +283,14 @@ function pretty(value: unknown, indent = 0): string {
 // The remote play's inventory: the control plane and the workers, each node
 // under its own name, from `nodes`.
 export function inventory(opts: Opts): string {
+  opts = ssh.withMachineKey(opts);
   const all = nodes(opts);
+  // In keygen mode nothing guarantees an agent holds the generated key, so the
+  // play is told which one to use; opt-out keeps the operator's own
+  // arrangements, as it always did.
   const host = (n: computeCluster.Node) =>
-    ({ ansible_host: n.ip, ansible_user: n.user, private_ip: n.vpc_ip });
+    ({ ansible_host: n.ip, ansible_user: n.user, private_ip: n.vpc_ip,
+       ...(validate.keygen(opts) ? { ansible_ssh_private_key_file: opts["ssh-private-key-path"] } : {}) });
   const hosts = (role: string) => Object.fromEntries(
     all.filter((n) => n.role === role)
       .map((n) => [n.name, host(n)] as const)
@@ -312,6 +327,7 @@ export async function ansibleLocalStep(opts: Opts): Promise<Opts> {
     extraVars: {
       host_alias: data["host-alias"],
       ip: entryIp(opts),
+      user: "root",
       block_state: isDelete ? "absent" : "present",
     },
   }, ansibleLocalSpecs(opts));

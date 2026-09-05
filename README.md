@@ -40,6 +40,17 @@ DigitalOcean Load Balancer created by the cloud controller. Delete removes that
 Kubernetes-managed load balancer before destroying the VPC and Droplets.
 `compute-prevent-destroy: true` protects all deployment-owned cloud resources.
 
+The deployment owns its SSH keypair (the workspace SSH Keypair Standard,
+keygen mode): with no `digitalocean-ssh-keys` in `colors.yml`, the first real
+`create` generates `~/.ssh/<profile>` and `~/.ssh/<profile>.pub`, registers
+the public key at DigitalOcean under the profile's name, names it in the
+`~/.ssh/config` block that `ssh <profile>` and `./green kubectl` use, and
+`delete` removes the key last, after the Droplets are gone. Supplying
+`digitalocean-ssh-keys` (an id or fingerprint already registered on the
+account; the key this package used to take as
+`digitalocean-ssh-key-fingerprint`) opts out: nothing is generated or
+uploaded.
+
 ## Development
 
 ```sh
