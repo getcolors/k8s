@@ -37,9 +37,12 @@ A real lifecycle run requires Bun, OpenTofu, Ansible, and SSH. The provided
 Ensure that path contains the controller/config/application reconciliation
 objects before provisioning.
 
-Delete first asks Kubernetes to remove the ingress LoadBalancer and waits for
-its service finalizer, then destroys only the deployment-owned Droplets,
-firewalls, and VPC, and finally removes the deployment's SSH keypair.
+Delete first prunes the application and waits for external-dns to withdraw
+the application host's DNS records, asks Kubernetes to remove the ingress
+LoadBalancer and waits for its service finalizer, then destroys only the
+deployment-owned Droplets, firewalls, and VPC (retrying DigitalOcean's
+"VPC with members" refusal while the droplets drain), and finally removes
+the deployment's SSH keypair.
 
 The deployment owns its SSH keypair (keygen mode: leave `digitalocean-ssh-keys`
 out of `colors.yml`; the first real `create` generates `~/.ssh/<profile>`,

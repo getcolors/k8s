@@ -58,6 +58,35 @@ def test_inventory_separates_control_plane_and_worker():
             ["k8s-test-worker-1"]["ansible_host"] == "203.0.113.2")
 
 
+async def test_a_destroy_retries_only_the_vpc_members_race(monkeypatch):
+    monkeypatch.setitem(tools.destroy_retry, "delay_s", 0)
+    calls = {"n": 0}
+
+    async def racing():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return {"blue/exit": 1, "blue/err": "tofu destroy failed: Error deleting VPC: 409 Can not delete VPC with members"}
+        return {"blue/exit": 0}
+    assert (await tools.destroy_with_drain(racing))["blue/exit"] == 0
+    assert calls["n"] == 3
+
+    calls["n"] = 0
+
+    async def other():
+        calls["n"] += 1
+        return {"blue/exit": 1, "blue/err": "tofu destroy failed: something else"}
+    assert (await tools.destroy_with_drain(other))["blue/exit"] == 1
+    assert calls["n"] == 1
+
+    calls["n"] = 0
+
+    async def forever():
+        calls["n"] += 1
+        return {"blue/exit": 1, "blue/err": "Can not delete VPC with members"}
+    assert (await tools.destroy_with_drain(forever))["blue/exit"] == 1
+    assert calls["n"] == 4
+
+
 def test_the_inventory_names_the_generated_key_in_keygen_mode_only():
     # On a build the placeholder; opt-out keeps the operator's own arrangements.
     built = json.loads(tools.inventory({**base, "once/cluster": cluster, "blue/event": "build"}))

@@ -194,6 +194,29 @@ describe("tools", () => {
       .toBe("203.0.113.2");
   });
 
+  test("a destroy retries only the VPC-members race", async () => {
+    const saved = tools.destroyRetry.delayMs;
+    tools.destroyRetry.delayMs = 0;
+    try {
+      let calls = 0;
+      const racing = async () => (++calls < 3
+        ? { "red/exit": 1, "red/err": "tofu destroy failed: Error deleting VPC: 409 Can not delete VPC with members" }
+        : { "red/exit": 0 });
+      expect((await tools.destroyWithDrain(racing))["red/exit"]).toBe(0);
+      expect(calls).toBe(3);
+      calls = 0;
+      const other = async () => { calls++; return { "red/exit": 1, "red/err": "tofu destroy failed: something else" }; };
+      expect((await tools.destroyWithDrain(other))["red/exit"]).toBe(1);
+      expect(calls).toBe(1);
+      calls = 0;
+      const forever = async () => { calls++; return { "red/exit": 1, "red/err": "Can not delete VPC with members" }; };
+      expect((await tools.destroyWithDrain(forever))["red/exit"]).toBe(1);
+      expect(calls).toBe(4);
+    } finally {
+      tools.destroyRetry.delayMs = saved;
+    }
+  });
+
   test("the inventory names the generated key in keygen mode only", () => {
     // On a build the placeholder; opt-out keeps the operator's own arrangements.
     const built = JSON.parse(tools.inventory({ ...base, "once/cluster": cluster, "red/event": "build" }));

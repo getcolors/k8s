@@ -185,12 +185,38 @@ export async function stateOutput(opts: Opts): Promise<computeCluster.ClusterPar
   return legacyParams(opts, outputs);
 }
 
+// DigitalOcean's answer when a VPC is deleted while it still counts members.
+export const vpcMembersError = /Can not delete VPC with members/;
+
+// How often a destroy is retried on `vpcMembersError`, and how long it waits
+// between attempts. Mutable so a test can shorten the wait.
+export const destroyRetry = { attempts: 4, delayMs: 30000 };
+
+// Run a destroy, retrying the DigitalOcean VPC race. Droplets are deleted
+// asynchronously, and a destroy that reaches the deployment-owned VPC seconds
+// later is refused with 409 `Can not delete VPC with members` — a race the
+// next attempt wins once the members have drained (seen live on 2026-09-05).
+// Only that message is retried; every other failure is reported as is, on the
+// first attempt.
+export async function destroyWithDrain(run: () => Promise<Opts>): Promise<Opts> {
+  for (let attempt = 1; ; attempt++) {
+    const result = await run();
+    if (failed(result) && vpcMembersError.test(String(result["red/err"] ?? "")) &&
+        attempt < destroyRetry.attempts) {
+      await new Promise((resolve) => setTimeout(resolve, destroyRetry.delayMs));
+      continue;
+    }
+    return result;
+  }
+}
+
 export async function infrastructureStep(opts: Opts): Promise<Opts> {
   const dir = toolDir(opts, infrastructureTool);
-  const result = await tofu.tofuWithSpec(opts, infrastructureSpecs(opts), {
+  const run = () => tofu.tofuWithSpec(opts, infrastructureSpecs(opts), {
     dir,
     env: credentialEnv(opts, "provider-compute"),
   });
+  const result = opts["red/event"] === "delete" ? await destroyWithDrain(run) : await run();
   if (failed(result)) return result;
   if (opts["red/event"] === "delete" || opts["red/event"] === "build") return result;
   // A real converge never falls back: nil outputs and a partial cluster are

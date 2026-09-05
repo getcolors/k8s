@@ -63,6 +63,24 @@
            (:ssh-config-identity-file (:data (first (tools/ansible-local-specs (assoc vt/base :green/event :build)))))))
     (is (false? (:ssh-keygen (:data (first (tools/ansible-local-specs vt/optout))))))))
 
+(deftest a-destroy-retries-only-the-vpc-members-race
+  (with-redefs [tools/destroy-retry {:attempts 4 :delay-ms 0}]
+    (let [calls (atom 0)
+          racing (fn [] (swap! calls inc)
+                   (if (< @calls 3)
+                     {:green/exit 1 :green/err "tofu destroy failed: Error: Error deleting VPC: 409 Can not delete VPC with members"}
+                     {:green/exit 0}))]
+      (is (= 0 (:green/exit (tools/destroy-with-drain racing))))
+      (is (= 3 @calls) "two refusals, then the drained VPC goes"))
+    (let [calls (atom 0)
+          other (fn [] (swap! calls inc) {:green/exit 1 :green/err "tofu destroy failed: something else"})]
+      (is (= 1 (:green/exit (tools/destroy-with-drain other))))
+      (is (= 1 @calls) "any other failure is reported on the first attempt"))
+    (let [calls (atom 0)
+          forever (fn [] (swap! calls inc) {:green/exit 1 :green/err "Can not delete VPC with members"})]
+      (is (= 1 (:green/exit (tools/destroy-with-drain forever))))
+      (is (= 4 @calls) "the retry is bounded"))))
+
 (deftest build-renders-fallback-nodes-under-the-packages-own-names
   ;; No adopted cluster: ONCE's fallbacks on TEST-NET-1 and the owned VPC's
   ;; CIDR, named the way the template names the droplets.

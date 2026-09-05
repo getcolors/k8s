@@ -160,12 +160,39 @@
         (empty? outputs) nil
         :else (legacy-params opts outputs)))))
 
+(def vpc-members-error
+  "DigitalOcean's answer when a VPC is deleted while it still counts members."
+  #"Can not delete VPC with members")
+
+(def destroy-retry
+  "How often a destroy is retried on `vpc-members-error`, and how long it
+  waits between attempts. A var so a test can shorten the wait."
+  {:attempts 4 :delay-ms 30000})
+
+(defn destroy-with-drain
+  "Run a destroy, retrying the DigitalOcean VPC race. Droplets are deleted
+  asynchronously, and a destroy that reaches the deployment-owned VPC
+  seconds later is refused with 409 `Can not delete VPC with members` — a
+  race the next attempt wins once the members have drained (seen live on
+  2026-09-05). Only that message is retried; every other failure is
+  reported as is, on the first attempt."
+  [run]
+  (loop [attempt 1]
+    (let [result (run)]
+      (if (and (wf/failed? result)
+               (re-find vpc-members-error (str (:green/err result)))
+               (< attempt (:attempts destroy-retry)))
+        (do (Thread/sleep (long (:delay-ms destroy-retry)))
+            (recur (inc attempt)))
+        result))))
+
 (defn infrastructure-step [opts]
   (let [dir (tool-dir opts infrastructure-tool)
-        result (tofu/tofu-with-spec
-                opts (infrastructure-specs opts)
-                {:dir dir
-                 :env (credential-env opts :provider-compute)})]
+        run #(tofu/tofu-with-spec
+              opts (infrastructure-specs opts)
+              {:dir dir
+               :env (credential-env opts :provider-compute)})
+        result (if (= :delete (:green/event opts)) (destroy-with-drain run) (run))]
     (cond
       (wf/failed? result) result
       (= :delete (:green/event opts)) result

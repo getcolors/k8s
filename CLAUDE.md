@@ -53,8 +53,13 @@ the trees — and the colour template trees (`red/resources`, blue's embedded
 
 Create is `start -> infrastructure -> ansible-local -> ansible-remote ->
 acceptance`. Delete loads node addresses from remote state without changing
-infrastructure, removes the Kubernetes-managed DigitalOcean Load Balancer,
-then removes local SSH configuration and destroys infrastructure.
+infrastructure, prunes the application Kustomization and waits for
+external-dns (policy `sync` in `k8s-helloworld`) to withdraw the application
+host's records while it still runs, removes the Kubernetes-managed
+DigitalOcean Load Balancer, then removes local SSH configuration and destroys
+infrastructure — retrying the destroy on DigitalOcean's `Can not delete VPC
+with members` 409, a race between asynchronous droplet deletion and the VPC
+delete that the next attempt wins — and removes the keypair last.
 Stage names are remote-state keys and remain package-specific.
 
 Build and dry-run are credential-free. Credentials use only `COLORS_PAR_*` and

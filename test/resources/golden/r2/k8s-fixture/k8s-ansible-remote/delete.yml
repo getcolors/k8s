@@ -9,6 +9,39 @@
         kubectl --kubeconfig=/etc/kubernetes/admin.conf get --raw=/readyz
       changed_when: false
 
+    # external-dns runs with policy sync (k8s-helloworld), so pruning the
+    # application is what withdraws its records — and that must happen while
+    # external-dns still runs, i.e. before the GitOps Kustomization below
+    # takes the controllers with it. Without this the A and TXT records for
+    # the application host outlive the cluster, pointing at a load balancer
+    # that no longer exists (seen live on 2026-09-05).
+    - name: Check whether external-dns is running
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n external-dns
+        get deployment external-dns-external-dns -o name
+      register: k8s_external_dns
+      changed_when: false
+      failed_when: false
+
+    - name: Delete the application Kustomization so external-dns withdraws its records
+      ansible.builtin.command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n flux-system
+        delete kustomization apps --ignore-not-found=true
+        --wait=true --timeout=600s
+      changed_when: true
+
+    - name: Wait for external-dns to withdraw hello.fixture.example
+      ansible.builtin.shell: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n external-dns
+        logs deployment/external-dns-external-dns --since=30m
+        | grep -q 'action=DELETE record=hello.fixture.example '
+      register: k8s_dns_withdrawn
+      until: k8s_dns_withdrawn.rc == 0
+      retries: 30
+      delay: 10
+      changed_when: false
+      when: k8s_external_dns.rc == 0
+
     - name: Delete the GitOps Kustomization and prune its inventory
       ansible.builtin.command: >-
         kubectl --kubeconfig=/etc/kubernetes/admin.conf -n flux-system

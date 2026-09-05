@@ -3,7 +3,9 @@ port of io.github.getcolors.k8s.tools."""
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 import math
 from decimal import Decimal
 from pathlib import Path
@@ -177,11 +179,41 @@ async def state_output(opts: dict) -> dict | None:
     return legacy_params(opts, outputs)
 
 
+# DigitalOcean's answer when a VPC is deleted while it still counts members.
+VPC_MEMBERS_ERROR = re.compile(r"Can not delete VPC with members")
+
+# How often a destroy is retried on VPC_MEMBERS_ERROR, and how long it waits
+# between attempts. Mutable so a test can shorten the wait.
+destroy_retry = {"attempts": 4, "delay_s": 30.0}
+
+
+async def destroy_with_drain(run) -> dict:
+    """Run a destroy, retrying the DigitalOcean VPC race. Droplets are deleted
+    asynchronously, and a destroy that reaches the deployment-owned VPC
+    seconds later is refused with 409 `Can not delete VPC with members` — a
+    race the next attempt wins once the members have drained (seen live on
+    2026-09-05). Only that message is retried; every other failure is
+    reported as is, on the first attempt."""
+    attempt = 1
+    while True:
+        result = await run()
+        if (failed(result) and VPC_MEMBERS_ERROR.search(str(result.get("blue/err") or ""))
+                and attempt < destroy_retry["attempts"]):
+            await asyncio.sleep(destroy_retry["delay_s"])
+            attempt += 1
+            continue
+        return result
+
+
 async def infrastructure_step(opts: dict) -> dict:
     dir = tool_dir(opts, infrastructure_tool)
-    result = await tofu.tofu_with_spec(opts, infrastructure_specs(opts),
-                                       dir=dir,
-                                       env=credential_env(opts, "provider-compute"))
+
+    async def run():
+        return await tofu.tofu_with_spec(opts, infrastructure_specs(opts),
+                                         dir=dir,
+                                         env=credential_env(opts, "provider-compute"))
+
+    result = await destroy_with_drain(run) if opts.get("blue/event") == "delete" else await run()
     if failed(result):
         return result
     if opts.get("blue/event") in ("delete", "build"):
