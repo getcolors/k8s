@@ -32,7 +32,12 @@ resource "digitalocean_vpc" "cluster" {
 # keygen mode.
 resource "digitalocean_ssh_key" "machine" {
   name       = "k8s-fixture"
-  public_key = trimspace(file("/home/build-placeholder/.ssh/k8s-fixture.pub"))
+  # fileexists: a delete after a completed delete renders this stack with the
+  # key files already gone (the keypair cleanup is the last step) and tofu
+  # evaluates file() even while destroying an empty state. A real create has
+  # generated the file in preflight before this renders, so the empty branch
+  # is never applied.
+  public_key = fileexists("/home/build-placeholder/.ssh/k8s-fixture.pub") ? trimspace(file("/home/build-placeholder/.ssh/k8s-fixture.pub")) : ""
 }
 
 resource "digitalocean_droplet" "control_plane" {
