@@ -8,6 +8,7 @@ import * as tofu from "red/tofu";
 import { runtime, type ExecResult } from "red/runtime";
 import type { Opts } from "red/workflow";
 import { StepError, failed } from "red/workflow";
+import { compute, computeCluster } from "package-once-red";
 import * as utils from "./utils.ts";
 import * as validate from "./validate.ts";
 
@@ -73,16 +74,110 @@ export function infrastructureSpecs(opts: Opts): Spec[] {
   return [spec(template("infrastructure", "main.tf"), `${dir}/main.tf`, data)];
 }
 
-export const fallbackOutputs: Opts = {
-  digitalocean_vpc_id: "00000000-0000-0000-0000-000000000000",
-  control_plane_public_ip: "192.168.0.10",
-  control_plane_private_ip: "10.20.0.10",
-  worker_public_ips: ["192.168.0.11"],
-  worker_private_ips: ["10.20.0.11"],
-};
+// What `build` and `--dry-run` render as the VPC id: the compute stage owns
+// the real one, recorded as `params.vpc_id`.
+export const fallbackVpcId = "00000000-0000-0000-0000-000000000000";
 
-function outputMap(result: Opts): Opts | undefined {
-  return result["k8s/outputs"] as Opts | undefined;
+// What this package calls a node — `<name>-<role>-<ordinal>`, 1-based, the
+// rule the template gives the droplets. This is the package's own naming, kept
+// over ONCE's fallback rule (Compute Cluster Standard §5, adoption renames
+// nothing), and the name the legacy translation gives a node a pre-adoption
+// state recorded without one.
+export function nodeName(opts: Opts, role: string, index: number): string {
+  return `${opts["digitalocean-name"]}-${role}-${index + 1}`;
+}
+
+// The cluster's nodes in declared order — ONCE's `nodes` over the adopted
+// `once/cluster`: every field from state on a real run, the fallbacks on a
+// build, with their names overridden to this package's own.
+export function nodes(opts: Opts): computeCluster.Node[] {
+  const cluster = opts["once/cluster"] as computeCluster.ClusterParams | undefined;
+  const result = computeCluster.nodes(validate.spec, opts, cluster);
+  if (cluster === undefined || cluster === null) {
+    return result.map((n) => ({ ...n, name: nodeName(opts, String(n.role), n.index) }));
+  }
+  return result;
+}
+
+// The address the bare `<profile>` alias points to: the control plane's, as
+// ONCE's `sshConfigHosts` resolves the spec's `entry`.
+export function entryIp(opts: Opts): unknown {
+  return computeCluster.sshConfigHosts(validate.spec, opts, nodes(opts))[0]?.ip;
+}
+
+const nonBlank = (x: unknown): boolean => typeof x === "string" && x.trim().length > 0;
+
+// The extension key this package puts inside `params` beside ONCE's: `vpc_id`,
+// the deployment-owned VPC the cloud controller is told about. A real run is
+// refused without it.
+export function paramsErrors(params: Opts | undefined): string[] {
+  return nonBlank(params?.vpc_id) ? [] : ["compute state carries no vpc_id"];
+}
+
+// After `resolvedCluster` or `adoptState`: this package's `paramsErrors` over
+// the adopted cluster, when there is one.
+function withParamsCheck(opts: Opts): Opts {
+  const cluster = opts["once/cluster"] as Opts | undefined;
+  if (failed(opts) || cluster === undefined || cluster === null) return opts;
+  const errors = paramsErrors(cluster);
+  return errors.length > 0 ? { ...opts, "red/exit": 1, "red/err": errors.join("\n") } : opts;
+}
+
+// The `params` a pre-adoption state describes. Before this package recorded
+// `params`, its template output a scalar control plane
+// (`control_plane_public_ip`, `control_plane_private_ip`) and two parallel
+// worker lists; this builds control-plane node 0 from the scalars and worker i
+// from the lists, names them by this package's own rule, and carries `vpc_id`
+// from `digitalocean_vpc_id`. Refused — as the SDK's `StepError`, so
+// `readState` reports it and a delete fails closed — when the two lists
+// disagree or the VPC id is absent or blank. Nothing else reads a legacy
+// output after adoption.
+export function legacyParams(opts: Opts, outputs: Record<string, unknown>): computeCluster.ClusterParams {
+  const publics = Array.isArray(outputs.worker_public_ips) ? outputs.worker_public_ips : [];
+  const privates = Array.isArray(outputs.worker_private_ips) ? outputs.worker_private_ips : [];
+  const vpcId = outputs.digitalocean_vpc_id;
+  if (publics.length !== privates.length) {
+    throw new StepError(`legacy state lists ${publics.length} worker public addresses and ` +
+      `${privates.length} private addresses; refusing to guess the cluster`);
+  }
+  if (!nonBlank(vpcId)) throw new StepError("legacy state carries no digitalocean_vpc_id");
+  const node = (index: number, role: string, ip: unknown, vpcIp: unknown): computeCluster.Node => ({
+    index, role, name: nodeName(opts, role, index),
+    ip: ip as string, vpc_ip: vpcIp as string, user: "root", sudoer: "root",
+  });
+  return {
+    provider: "digitalocean",
+    vpc_id: vpcId,
+    nodes: [
+      node(0, "control-plane", outputs.control_plane_public_ip, outputs.control_plane_private_ip),
+      ...publics.map((ip, i) => node(i, "worker", ip, privates[i])),
+    ],
+  } as computeCluster.ClusterParams;
+}
+
+// The reader ONCE's `readState` takes: the compute `params` recorded in the
+// infrastructure state, undefined when the state holds no outputs at all, and
+// the legacy translation above when it holds the pre-adoption outputs. The
+// stage is initialised first so remote state is reachable without planning or
+// changing cloud resources. An unreadable backend — a failed init, or whatever
+// `red/tofu` throws — is the SDK's `StepError`, which `readState` turns into
+// `{ error }`; create and delete treat that differently. Injectable into the
+// steps so tests never shell out to tofu.
+export async function stateOutput(opts: Opts): Promise<computeCluster.ClusterParams | undefined> {
+  const dir = toolDir(opts, infrastructureTool);
+  const env = credentialEnv(opts, "provider-compute");
+  const init = await runtime.exec(
+    ["tofu", `-chdir=${dir}`, "init", "-input=false", "-no-color"], { env });
+  if (init.exit !== 0) {
+    throw new StepError(`tofu init failed: ${init.err || init.out || "(no output)"}`);
+  }
+  const outputs = await tofu.outputs(dir, env);
+  if ("params" in outputs) {
+    const params = outputs.params;
+    return params && typeof params === "object" ? params as computeCluster.ClusterParams : undefined;
+  }
+  if (Object.keys(outputs).length === 0) return undefined;
+  return legacyParams(opts, outputs);
 }
 
 export async function infrastructureStep(opts: Opts): Promise<Opts> {
@@ -90,48 +185,39 @@ export async function infrastructureStep(opts: Opts): Promise<Opts> {
   const result = await tofu.tofuWithSpec(opts, infrastructureSpecs(opts), {
     dir,
     env: credentialEnv(opts, "provider-compute"),
-    outputKey: "k8s/outputs",
   });
   if (failed(result)) return result;
-  if (opts["red/event"] === "delete") return result;
-  if (opts["red/event"] === "build") return { ...result, ...fallbackOutputs };
-  return { ...result, ...fallbackOutputs, ...(outputMap(result) ?? {}) };
+  if (opts["red/event"] === "delete" || opts["red/event"] === "build") return result;
+  // A real converge never falls back: nil outputs and a partial cluster are
+  // refused by ONCE, then the VPC id by this package.
+  return withParamsCheck(computeCluster.resolvedCluster(
+    validate.spec, opts, result, {}, computeCluster.outputParams(result)));
 }
 
-// Load node addresses from remote state without planning or changing cloud
-// resources.
-export async function loadInfrastructureStep(opts: Opts): Promise<Opts> {
-  const dir = toolDir(opts, infrastructureTool);
+// Adopt the cluster from remote state without planning or changing cloud
+// resources: ONCE's `readState` over the reader, then `adoptState`, which
+// fails closed on an unreadable backend and refuses a partial cluster, then
+// this package's `paramsErrors`. A readable state holding no compute leaves
+// `once/cluster` absent, and the remote cleanup skips itself.
+export async function loadInfrastructureStep(
+  opts: Opts,
+  reader: compute.StateReader = stateOutput,
+): Promise<Opts> {
   const rendered: Opts = {
     ...scaffold({ ...opts, "red/event": "build" }, infrastructureSpecs(opts)),
     "red/event": opts["red/event"],
   };
-  const env = credentialEnv(opts, "provider-compute");
-  const init = await runtime.exec(
-    ["tofu", `-chdir=${dir}`, "init", "-input=false", "-no-color"], { env });
-  if (init.exit !== 0) {
-    return processResult(rendered, "infrastructure state initialization", init);
-  }
-  try {
-    const outputs = await tofu.outputs(dir, env);
-    return {
-      ...rendered, ...fallbackOutputs, ...outputs,
-      "k8s/infrastructure-present?": "control_plane_public_ip" in outputs,
-    };
-  } catch (t) {
-    return {
-      ...rendered, "red/exit": 1,
-      "red/err": "infrastructure state output failed: " +
-        (t instanceof Error ? t.message || t.constructor.name : String(t)),
-    };
-  }
+  const state = await computeCluster.readState(rendered, reader);
+  return withParamsCheck(
+    computeCluster.adoptState(validate.spec, rendered, String(opts["red/event"]), state));
 }
 
 // Complete deterministic template data for build as well as create.
 export function dataFn(opts: Opts): Opts {
+  const cluster = opts["once/cluster"] as Opts | undefined;
   return {
-    ...fallbackOutputs,
     ...opts,
+    digitalocean_vpc_id: cluster?.vpc_id ?? fallbackVpcId,
     "host-alias": utils.hostAlias(opts),
     "kubernetes-minor": utils.kubernetesMinor(opts["kubernetes-version"]),
     "kubernetes-package-version":
@@ -184,32 +270,21 @@ function pretty(value: unknown, indent = 0): string {
   return JSON.stringify(value ?? null);
 }
 
-// JSON inventory separating the control plane from the workers.
+// The remote play's inventory: the control plane and the workers, each node
+// under its own name, from `nodes`.
 export function inventory(opts: Opts): string {
-  const data = dataFn(opts);
-  const cpName = `${data["digitalocean-name"]}-control-plane-1`;
-  const publicIps = (data.worker_public_ips ?? []) as unknown[];
-  const privateIps = (data.worker_private_ips ?? []) as unknown[];
-  const workers = publicIps
-    .slice(0, Math.min(publicIps.length, privateIps.length))
-    .map((publicIp, index) => [
-      `${data["digitalocean-name"]}-worker-${index + 1}`,
-      { ansible_host: publicIp, ansible_user: "root", private_ip: privateIps[index] },
-    ] as const);
-  const sorted = [...workers].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const all = nodes(opts);
+  const host = (n: computeCluster.Node) =>
+    ({ ansible_host: n.ip, ansible_user: n.user, private_ip: n.vpc_ip });
+  const hosts = (role: string) => Object.fromEntries(
+    all.filter((n) => n.role === role)
+      .map((n) => [n.name, host(n)] as const)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   return pretty({
     all: {
       children: {
-        control_plane: {
-          hosts: {
-            [cpName]: {
-              ansible_host: data.control_plane_public_ip,
-              ansible_user: "root",
-              private_ip: data.control_plane_private_ip,
-            },
-          },
-        },
-        workers: { hosts: Object.fromEntries(sorted) },
+        control_plane: { hosts: hosts("control-plane") },
+        workers: { hosts: hosts("worker") },
         k8s_cluster: { children: { control_plane: {}, workers: {} } },
       },
     },
@@ -236,7 +311,7 @@ export async function ansibleLocalStep(opts: Opts): Promise<Opts> {
     playbooks: { create: "main.yml", delete: "main.yml" },
     extraVars: {
       host_alias: data["host-alias"],
-      ip: data.control_plane_public_ip,
+      ip: entryIp(opts),
       block_state: isDelete ? "absent" : "present",
     },
   }, ansibleLocalSpecs(opts));
@@ -250,12 +325,15 @@ export function ansibleRemoteSpecs(opts: Opts): Spec[] {
     spec(template("ansible-remote", "create.yml"), `${dir}/create.yml`, data),
     spec(template("ansible-remote", "delete.yml"), `${dir}/delete.yml`, data),
     spec(template("ansible-remote", "gitops.yml"), `${dir}/gitops.yml`, data),
-    rawSpec(`${dir}/inventory.json`, inventory(data)),
+    rawSpec(`${dir}/inventory.json`, inventory(opts)),
   ];
 }
 
+// The remote play. On a delete it addresses the adopted cluster; a state that
+// recorded no compute — the nodes are already gone — has nothing to clean up,
+// and the step skips itself rather than render the fallbacks.
 export async function ansibleRemoteStep(opts: Opts): Promise<Opts> {
-  if (opts["red/event"] === "delete" && opts["k8s/infrastructure-present?"] === false) {
+  if (opts["red/event"] === "delete" && opts["once/cluster"] == null) {
     return opts;
   }
   const dir = toolDir(opts, ansibleRemoteTool);

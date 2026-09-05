@@ -69,21 +69,42 @@ kubeconfig is copied locally. DigitalOcean and Cloudflare tokens are streamed
 from process environment into Kubernetes Secrets with Ansible `no_log` and
 never enter generated files or GitOps.
 
-The package depends only on the SDK — in every colour. Its own multi-node
-DigitalOcean template is preferable to coupling to ONCE's single-server
-templates, so unlike `k3s` there is no ONCE pin anywhere. Golden output guards
-firewall, state-key, pin, and no-rendered-secret invariants.
+The package keeps its own multi-node DigitalOcean template rather than
+coupling to ONCE's single-server templates, but it delegates the Compute
+Cluster Standard (`workspace/standards/compute-cluster.md`) to ONCE's
+`compute-cluster` namespace in every colour, so it pins ONCE beside the SDK.
+The package owns the data and the wiring: the `compute-providers` registry
+with its `:created` network (`digitalocean-vpc-cidr`), the `spec` — roles
+`control-plane` and `worker`, one each, the control plane as the entry —
+its own validators (both counts fixed at 1, the pod and service CIDRs, the
+DNS slot), its node naming (`<name>-<role>-<ordinal>`, overriding ONCE's
+fallback names), the reader that turns a pre-adoption state (scalar control
+plane plus worker lists) into `params`, and `params-errors` over its
+extension key `vpc_id`. ONCE owns selection, the source-list and CIDR
+checks, the fallback addresses (`192.0.2.10`/`.11` public, the VPC CIDR's
+`.10`/`.11` private on a build), `nodes`, `read-state`, `adopt-state`,
+`resolved-cluster` and `provider-validator`, and its messages are the
+contract — call them, never copy them. The adopted cluster lives at
+`:once/cluster` after `load-infrastructure` (delete) and after the
+infrastructure stage (create); a real run never substitutes a fallback.
+Golden output guards firewall, state-key, pin, and no-rendered-secret
+invariants.
 
 ## Coupling
 
-The package pins the Green SDK in `green/deps.edn`, the Red SDK in
-`red/package.json`, and the Blue SDK in `blue/pyproject.toml`. The launchers
-pin only k8s: green resolves `green` transitively through `green/deps.edn`
-(`:deps/root "green"`), while the red and blue payloads carry their SDK pins
-beside the package pin.
+The package pins the Green SDK and ONCE in `green/deps.edn`, the Red SDK and
+ONCE in `red/package.json`, and the Blue SDK and ONCE in `blue/pyproject.toml`
+(with a `[tool.uv]` override so this package's blue pin wins over the older
+one ONCE carries). The launchers pin only k8s: green resolves `green` and
+`once` transitively through `green/deps.edn` (`:deps/root "green"`), while
+the red and blue payloads carry their SDK pins beside the package pin — the
+red payload's `PINS` also names the ONCE pin, and the blue payload's PEP 723
+block carries the same override. Move the ONCE pin in all five places
+together.
 
 Use `K8S_LIB_ROOT` (the repository root, for every colour; red also accepts
-the `red/` dir directly) and `GREEN_LIB_ROOT` for working-tree development.
+the `red/` dir directly), `GREEN_LIB_ROOT` and `ONCE_LIB_ROOT` for
+working-tree development.
 Final launchers use a pushed SHA managed by `bb pin` (in `green/`), which
 stamps all three payloads from their unpinned birth forms; deployment
 launchers are copies, not symlinks.

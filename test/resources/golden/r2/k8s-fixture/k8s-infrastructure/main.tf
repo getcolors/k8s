@@ -148,3 +148,29 @@ output "worker_public_ips" {
 output "worker_private_ips" {
   value = digitalocean_droplet.worker[*].ipv4_address_private
 }
+output "params" {
+  value = {
+    provider = "digitalocean"
+    vpc_id   = digitalocean_vpc.cluster.id
+    nodes = concat(
+      [{
+        index  = 0
+        role   = "control-plane"
+        name   = digitalocean_droplet.control_plane[0].name
+        ip     = digitalocean_droplet.control_plane[0].ipv4_address
+        vpc_ip = digitalocean_droplet.control_plane[0].ipv4_address_private
+        user   = "root"
+        sudoer = "root"
+      }],
+      [for i, w in digitalocean_droplet.worker : {
+        index  = i
+        role   = "worker"
+        name   = w.name
+        ip     = w.ipv4_address
+        vpc_ip = w.ipv4_address_private
+        user   = "root"
+        sudoer = "root"
+      }]
+    )
+  }
+}

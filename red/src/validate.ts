@@ -8,21 +8,54 @@
 import { parName } from "red/cli";
 import type { Registry } from "red/providers";
 import type { Opts } from "red/workflow";
+import { computeCluster } from "package-once-red";
+
+// provider-compute -> what that choice implies: the non-secret keys the
+// template interpolates, the credentials it needs through COLORS_PAR_*, the
+// subset OpenTofu reads from the process environment, and — the Compute
+// Cluster Standard's addition — the private network: this package owns a VPC
+// on DigitalOcean, sized by `digitalocean-vpc-cidr`. The keys of this map are
+// the advertised providers.
+//
+// `digitalocean-ssh-key-fingerprint` stays a required literal: the SSH Keypair
+// Standard's keygen mode is a separate adoption.
+export const computeProviders: computeCluster.ClusterRegistry = {
+  digitalocean: {
+    required: ["digitalocean-name", "digitalocean-region",
+               "digitalocean-control-plane-size",
+               "digitalocean-worker-size", "digitalocean-image",
+               "digitalocean-ssh-key-fingerprint",
+               "digitalocean-vpc-cidr",
+               "digitalocean-ssh-sources",
+               "digitalocean-api-sources"],
+    secrets: ["do-token"],
+    tofuEnv: { "do-token": "DIGITALOCEAN_TOKEN" },
+    network: { mode: "created", key: "digitalocean-vpc-cidr" },
+  },
+};
+
+// The provider a deployment created before this package recorded one in its
+// compute output must be running: the only one it ever offered.
+export const defaultComputeProvider = "digitalocean";
+
+// How this package describes itself to ONCE's `computeCluster`, the Compute
+// Cluster Standard's operations over a package-owned registry. The registry
+// and the default are the data above; `sources` names the firewall lists the
+// template reads, both of which must list at least one CIDR; `roles` is the
+// topology in play order — one control plane, then the workers, each count a
+// desired-state key this package separately holds at 1 — and the bare
+// `<profile>` alias points at the control plane.
+export const spec: computeCluster.ClusterSpec = {
+  registry: computeProviders,
+  default: defaultComputeProvider,
+  sources: { nonEmpty: ["ssh-sources", "api-sources"], mayBeEmpty: [] },
+  roles: [{ role: "control-plane", countKey: "control-plane-count", count: 1 },
+          { role: "worker", countKey: "worker-count", count: 1 }],
+  entry: { role: "control-plane", index: 0 },
+};
 
 export const providers: Registry = {
-  "provider-compute": {
-    digitalocean: {
-      required: ["digitalocean-name", "digitalocean-region",
-                 "digitalocean-control-plane-size",
-                 "digitalocean-worker-size", "digitalocean-image",
-                 "digitalocean-ssh-key-fingerprint",
-                 "digitalocean-vpc-cidr",
-                 "digitalocean-ssh-sources",
-                 "digitalocean-api-sources"],
-      secrets: ["do-token"],
-      tofuEnv: { "do-token": "DIGITALOCEAN_TOKEN" },
-    },
-  },
+  "provider-compute": computeProviders,
   "provider-dns": {
     cloudflare: {
       required: ["cloudflare-zone", "application-host"],
@@ -49,6 +82,11 @@ export const providers: Registry = {
 };
 
 export const slots = ["provider-compute", "provider-dns", "provider-backend"];
+
+// The slots this package selects over itself. Compute selection is ONCE's,
+// over `spec`, so a wrong `provider-compute` is reported once, in the
+// standard's words.
+const packageSlots = ["provider-dns", "provider-backend"];
 
 export const profilePar = parName("profile");
 
@@ -118,19 +156,19 @@ export const requiredKeys = [
   "external-dns-owner-id", "cert-manager-acme-environment",
 ];
 
-// All credential-free validation errors.
+// All credential-free validation errors. Deduplicated, because the owned
+// VPC's CIDR is both a required template key of this package's and the
+// network key ONCE's `networkErrors` reports as required in the same words;
+// one message per problem.
 export function stateErrors(opts: Opts): string[] {
   const errors: string[] = [];
   for (const key of missing(opts, [...requiredKeys, ...slotKeys(opts, "required")])) {
     errors.push(`:${key} is required`);
   }
-  for (const slot of slots) {
+  for (const slot of packageSlots) {
     if (!entry(opts, slot)) {
       errors.push(`unsupported :${slot} ${prStr(opts[slot])}`);
     }
-  }
-  if (opts["provider-compute"] !== "digitalocean") {
-    errors.push(":provider-compute must be digitalocean");
   }
   if (opts["kubernetes-distribution"] !== "kubeadm") {
     errors.push(":kubernetes-distribution must be kubeadm");
@@ -182,25 +220,20 @@ export function stateErrors(opts: Opts): string[] {
       !String(opts["application-host"]).endsWith(`.${opts["cloudflare-zone"]}`)) {
     errors.push(":application-host must be below :cloudflare-zone");
   }
-  for (const key of ["kubernetes-pod-cidr", "kubernetes-service-cidr",
-                     "digitalocean-vpc-cidr"]) {
+  for (const key of ["kubernetes-pod-cidr", "kubernetes-service-cidr"]) {
     const value = opts[key];
     if (!placeholder(value) && !validCidr(value)) {
       errors.push(`:${key} must be a valid IPv4 CIDR`);
     }
   }
-  for (const key of ["digitalocean-ssh-sources", "digitalocean-api-sources"]) {
-    const values = opts[key];
-    if (!placeholder(values) &&
-        (!Array.isArray(values) || values.length === 0 ||
-         values.some((value) => !validCidr(value)))) {
-      errors.push(`:${key} must be a non-empty list of IPv4 CIDRs`);
-    }
-  }
   if (!["production", "staging"].includes(String(opts["cert-manager-acme-environment"]))) {
     errors.push(":cert-manager-acme-environment must be production or staging");
   }
-  return errors;
+  // The Compute Cluster Standard's checks, ONCE's over `spec`: selection, the
+  // source lists, the provider's name rule, the owned VPC's CIDR as a
+  // canonical network holding every fallback address, and the topology.
+  errors.push(...computeCluster.stateErrors(spec, opts));
+  return [...new Set(errors)];
 }
 
 // Credentials required by the selected providers.

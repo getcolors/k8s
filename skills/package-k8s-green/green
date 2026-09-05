@@ -33,10 +33,10 @@
 ;;
 ;; Nothing in this stack is published to Clojars, so a standalone copy of this
 ;; launcher resolves `k8s` as an immutable git dependency and lets tools.deps
-;; pull `green` transitively from k8s's own deps.edn. When the classpath
-;; already provides k8s — running inside the project, where bb.edn supplies a
-;; local root — bootstrap is skipped. K8S_LIB_ROOT and GREEN_LIB_ROOT override
-;; immutable dependencies with working trees.
+;; pull `green` and `once` transitively from k8s's own deps.edn. When the
+;; classpath already provides k8s — running inside the project, where bb.edn
+;; supplies a local root — bootstrap is skipped. K8S_LIB_ROOT, GREEN_LIB_ROOT,
+;; and ONCE_LIB_ROOT override immutable dependencies with working trees.
 
 (def ^:private launcher-contract
   "Minimum io.github.getcolors.k8s contract this launcher requires. Guarded at
@@ -54,6 +54,7 @@
 
 (def ^:private k8s-git-url "https://github.com/getcolors/k8s.git")
 (def ^:private green-git-url "https://github.com/getcolors/green.git")
+(def ^:private once-git-url "https://github.com/getcolors/once.git")
 
 (defn- lib-coord
   [env-var url sha deps-root]
@@ -69,7 +70,8 @@
 (def ^:private bootstrap-error
   (when (and (System/getProperty "babashka.version") (not resolved?))
     (let [k8s (lib-coord "K8S_LIB_ROOT" k8s-git-url k8s-sha "green")
-          green (lib-coord "GREEN_LIB_ROOT" green-git-url nil nil)]
+          green (lib-coord "GREEN_LIB_ROOT" green-git-url nil nil)
+          once (lib-coord "ONCE_LIB_ROOT" once-git-url nil "green")]
       (if-not k8s
         (str "this launcher carries no k8s pin.\n"
              "It has not been stamped by `bb pin`, which cannot run until the "
@@ -77,7 +79,8 @@
              "Point it at a checkout meanwhile: K8S_LIB_ROOT=/path/to/k8s")
         (do ((requiring-resolve 'babashka.deps/add-deps)
              {:deps (cond-> {'io.github.getcolors/k8s k8s}
-                      green (assoc 'io.github.getcolors/green green))})
+                      green (assoc 'io.github.getcolors/green green)
+                      once (assoc 'io.github.getcolors/once once))})
             nil)))))
 
 ;; Nothing is required at the top level, deliberately. A bootstrap that resolved

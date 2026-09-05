@@ -1,7 +1,8 @@
 (ns io.github.getcolors.k8s.validate-test
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is]]
-            [io.github.getcolors.k8s.validate :as validate]))
+            [io.github.getcolors.k8s.validate :as validate]
+            [io.github.getcolors.once.compute-cluster :as cluster]))
 
 (def base
   {:profile "k8s-test" :workdir ".colors"
@@ -54,6 +55,38 @@
   (is (seq (matching (assoc base :control-plane-count 3) #"control-plane-count")))
   (is (seq (matching (assoc base :digitalocean-api-sources ["0.0.0.0/99"])
                      #"api-sources"))))
+
+(deftest compute-checks-are-the-standards-in-once-words
+  ;; The source lists, the owned VPC's CIDR and the selection are ONCE's
+  ;; checks over `spec`; the package no longer words them itself.
+  (is (= [":digitalocean-api-sources entry \"world\" is not an IPv4 or IPv6 CIDR"]
+         (matching (assoc base :digitalocean-api-sources ["world"]) #"api-sources")))
+  (is (= [":digitalocean-ssh-sources must list at least one CIDR"]
+         (matching (assoc base :digitalocean-ssh-sources []) #"ssh-sources")))
+  (is (= [":digitalocean-vpc-cidr must be a canonical IPv4 network such as 10.40.0.0/24"]
+         (matching (assoc base :digitalocean-vpc-cidr "10.20.0.1/20") #"vpc-cidr")))
+  (is (= [":digitalocean-vpc-cidr is required"]
+         (matching (dissoc base :digitalocean-vpc-cidr) #"vpc-cidr")))
+  (is (= [":provider-compute must be one of digitalocean"]
+         (matching (assoc base :provider-compute "hcloud") #"provider-compute")))
+  ;; A created network is this package's to own: compute's DigitalOcean
+  ;; "must not create a VPC" refusal is filtered, never reported.
+  (is (empty? (matching base #"must be absent"))))
+
+(deftest spec-content-is-the-two-role-topology
+  (is (= [] (cluster/spec-errors validate/spec)))
+  (is (= ["control-plane" "worker"] (map :role (:roles validate/spec))))
+  (is (= [1 1] (map :count (:roles validate/spec))))
+  (is (= [:control-plane-count :worker-count] (map :count-key (:roles validate/spec))))
+  (is (= {:role "control-plane" :index 0} (:entry validate/spec)))
+  (is (= {:mode :created :key :digitalocean-vpc-cidr}
+         (get-in validate/spec [:registry "digitalocean" :network])))
+  (is (= "digitalocean" (:default validate/spec)))
+  (is (= {:non-empty ["ssh-sources" "api-sources"] :may-be-empty []} (:sources validate/spec)))
+  (is (not (contains? validate/spec :fallback-subnet)))
+  (is (= [] (cluster/topology-errors validate/spec base)))
+  (is (= ["k8s-test" "k8s-test-control-plane" "k8s-test-worker"]
+         (cluster/aliases validate/spec base))))
 
 (deftest secret-errors-use-colors-variables
   (let [text (str/join "\n" (validate/secret-errors base))]

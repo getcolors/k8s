@@ -11,21 +11,54 @@ from __future__ import annotations
 import re
 
 from blue.cli import par_name
+from package_once_blue import compute_cluster as cluster
+
+# provider-compute -> what that choice implies: the non-secret keys the
+# template interpolates, the credentials it needs through COLORS_PAR_*, the
+# subset OpenTofu reads from the process environment, and — the Compute
+# Cluster Standard's addition — the private network: this package owns a VPC
+# on DigitalOcean, sized by `digitalocean-vpc-cidr`. The keys of this map are
+# the advertised providers.
+#
+# `digitalocean-ssh-key-fingerprint` stays a required literal: the SSH Keypair
+# Standard's keygen mode is a separate adoption.
+compute_providers = {
+    "digitalocean": {
+        "required": ["digitalocean-name", "digitalocean-region",
+                     "digitalocean-control-plane-size",
+                     "digitalocean-worker-size", "digitalocean-image",
+                     "digitalocean-ssh-key-fingerprint",
+                     "digitalocean-vpc-cidr",
+                     "digitalocean-ssh-sources",
+                     "digitalocean-api-sources"],
+        "secrets": ["do-token"],
+        "tofu-env": {"do-token": "DIGITALOCEAN_TOKEN"},
+        "network": {"mode": "created", "key": "digitalocean-vpc-cidr"},
+    },
+}
+
+# The provider a deployment created before this package recorded one in its
+# compute output must be running: the only one it ever offered.
+default_compute_provider = "digitalocean"
+
+# How this package describes itself to ONCE's `compute_cluster`, the Compute
+# Cluster Standard's operations over a package-owned registry. The registry
+# and the default are the data above; `sources` names the firewall lists the
+# template reads, both of which must list at least one CIDR; `roles` is the
+# topology in play order — one control plane, then the workers, each count a
+# desired-state key this package separately holds at 1 — and the bare
+# `<profile>` alias points at the control plane.
+spec: cluster.ClusterSpec = {
+    "registry": compute_providers,
+    "default": default_compute_provider,
+    "sources": {"non_empty": ["ssh-sources", "api-sources"], "may_be_empty": []},
+    "roles": [{"role": "control-plane", "count_key": "control-plane-count", "count": 1},
+              {"role": "worker", "count_key": "worker-count", "count": 1}],
+    "entry": {"role": "control-plane", "index": 0},
+}
 
 providers = {
-    "provider-compute": {
-        "digitalocean": {
-            "required": ["digitalocean-name", "digitalocean-region",
-                         "digitalocean-control-plane-size",
-                         "digitalocean-worker-size", "digitalocean-image",
-                         "digitalocean-ssh-key-fingerprint",
-                         "digitalocean-vpc-cidr",
-                         "digitalocean-ssh-sources",
-                         "digitalocean-api-sources"],
-            "secrets": ["do-token"],
-            "tofu-env": {"do-token": "DIGITALOCEAN_TOKEN"},
-        },
-    },
+    "provider-compute": compute_providers,
     "provider-dns": {
         "cloudflare": {"required": ["cloudflare-zone", "application-host"],
                        "secrets": ["cloudflare-api-token"],
@@ -46,6 +79,11 @@ providers = {
 }
 
 slots = ["provider-compute", "provider-dns", "provider-backend"]
+
+# The slots this package selects over itself. Compute selection is ONCE's,
+# over `spec`, so a wrong `provider-compute` is reported once, in the
+# standard's words.
+_package_slots = ["provider-dns", "provider-backend"]
 
 profile_par = par_name("profile")
 
@@ -120,15 +158,16 @@ required_keys = [
 
 
 def state_errors(opts: dict) -> list[str]:
-    """All credential-free validation errors."""
+    """All credential-free validation errors. Deduplicated, because the owned
+    VPC's CIDR is both a required template key of this package's and the
+    network key ONCE's `network_errors` reports as required in the same
+    words; one message per problem."""
     errors: list[str] = []
     for key in _missing(opts, [*required_keys, *_slot_keys(opts, "required")]):
         errors.append(f":{key} is required")
-    for slot in slots:
+    for slot in _package_slots:
         if _entry(opts, slot) is None:
             errors.append(f"unsupported :{slot} {_pr_str(opts.get(slot))}")
-    if opts.get("provider-compute") != "digitalocean":
-        errors.append(":provider-compute must be digitalocean")
     if opts.get("kubernetes-distribution") != "kubeadm":
         errors.append(":kubernetes-distribution must be kubeadm")
     if opts.get("kubernetes-cni") != "flannel":
@@ -169,20 +208,17 @@ def state_errors(opts: dict) -> list[str]:
             and not str(opts.get("application-host")).endswith(
                 f".{opts.get('cloudflare-zone')}")):
         errors.append(":application-host must be below :cloudflare-zone")
-    for key in ["kubernetes-pod-cidr", "kubernetes-service-cidr",
-                "digitalocean-vpc-cidr"]:
+    for key in ["kubernetes-pod-cidr", "kubernetes-service-cidr"]:
         value = opts.get(key)
         if not placeholder(value) and not valid_cidr(value):
             errors.append(f":{key} must be a valid IPv4 CIDR")
-    for key in ["digitalocean-ssh-sources", "digitalocean-api-sources"]:
-        values = opts.get(key)
-        if not placeholder(values) and (
-                not isinstance(values, (list, tuple)) or not values
-                or any(not valid_cidr(value) for value in values)):
-            errors.append(f":{key} must be a non-empty list of IPv4 CIDRs")
     if opts.get("cert-manager-acme-environment") not in ("production", "staging"):
         errors.append(":cert-manager-acme-environment must be production or staging")
-    return errors
+    # The Compute Cluster Standard's checks, ONCE's over `spec`: selection,
+    # the source lists, the provider's name rule, the owned VPC's CIDR as a
+    # canonical network holding every fallback address, and the topology.
+    errors.extend(cluster.state_errors(spec, opts))
+    return list(dict.fromkeys(errors))
 
 
 def _count_is_one(value) -> bool:

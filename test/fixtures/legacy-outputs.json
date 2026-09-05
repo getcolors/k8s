@@ -1,0 +1,7 @@
+{
+  "digitalocean_vpc_id": "9c0a1b2c-3d4e-4f60-8a7b-1c2d3e4f5a6b",
+  "control_plane_public_ip": "203.0.113.1",
+  "control_plane_private_ip": "10.20.0.2",
+  "worker_public_ips": ["203.0.113.2"],
+  "worker_private_ips": ["10.20.0.3"]
+}

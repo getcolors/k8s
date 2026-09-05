@@ -3,14 +3,22 @@ the port of io.github.getcolors.k8s.workflow."""
 
 from __future__ import annotations
 
+import os
+
 from blue import dry_run, progress, tofu
 from blue.cli import par_name, read_pars
 from blue.lifecycle import preflight
 from blue.workflow import advice_add, workflow
+from package_once_blue import compute_cluster as cluster
 
 from . import tools, validate
 
 LIFECYCLE_EVENTS = ("create", "delete")
+
+
+def _lifecycle_event(context: dict) -> bool:
+    """A real create or delete: the two events that touch the provider."""
+    return bool(context.get("real") and context.get("event") in LIFECYCLE_EVENTS)
 
 DEFAULTS = {"compute-prevent-destroy": True,
             "provider-compute": "digitalocean",
@@ -28,14 +36,30 @@ DEFAULTS = {"compute-prevent-destroy": True,
 
 
 async def start_step(opts: dict, env: dict | None = None) -> dict:
-    """Overlay credentials, validate, and guard real destruction."""
+    """Overlay credentials, validate, and guard real destruction.
+
+    The compute state is read up front, on the same defaulted and overlaid
+    opts the validators see — the overlay is what carries the backend
+    credentials — and only for the two events that touch the provider, so
+    the Compute Provider Standard's §4 check runs before the credentials: a
+    recorded provider that differs from the selected one reports the
+    actionable error, not a missing token. On a create an unreadable
+    backend counts as no state (a fresh clone has none); a delete adopts
+    the cluster in its own first step and fails closed there.
+    """
+    environment = dict(os.environ if env is None else env)
+    overlaid = read_pars({**DEFAULTS, **opts}, environment)
+    context = {"event": overlaid.get("blue/event"), "real": not overlaid.get("blue/dry-run")}
+    state = (await cluster.read_state(overlaid, tools.state_output)
+             if _lifecycle_event(context) else {})
     return await preflight(
         opts, defaults=DEFAULTS, overlay=read_pars, env=env,
         validators=[
             lambda _o, e, _c: validate.env_errors(e),
             lambda o, _e, _c: validate.state_errors(o),
-            lambda o, _e, c: (validate.secret_errors(o)
-                              if c["real"] and c["event"] in LIFECYCLE_EVENTS else []),
+            lambda o, _e, c: (cluster.provider_validator(
+                validate.spec, o, state.get("params"), lambda: validate.secret_errors(o))
+                if _lifecycle_event(c) else []),
             lambda o, _e, c: ([f"compute destruction is protected; set "
                                f"{par_name('compute-prevent-destroy')}=false for this delete"]
                               if c["real"] and c["event"] == "delete"

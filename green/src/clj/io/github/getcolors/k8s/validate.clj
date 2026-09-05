@@ -1,19 +1,52 @@
 (ns io.github.getcolors.k8s.validate
   "Credential-free kubeadm/DigitalOcean desired-state validation."
   (:require [clojure.string :as str]
-            [green.cli :as green-cli]))
+            [green.cli :as green-cli]
+            [io.github.getcolors.once.compute-cluster :as cluster]))
+
+(def compute-providers
+  "provider-compute -> what that choice implies: the non-secret keys the
+  template interpolates, the credentials it needs through COLORS_PAR_*, the
+  subset OpenTofu reads from the process environment, and — the Compute
+  Cluster Standard's addition — the private network: this package owns a
+  VPC on DigitalOcean, sized by `digitalocean-vpc-cidr`. The keys of this
+  map are the advertised providers.
+
+  `digitalocean-ssh-key-fingerprint` stays a required literal: the SSH
+  Keypair Standard's keygen mode is a separate adoption."
+  {"digitalocean" {:required [:digitalocean-name :digitalocean-region
+                              :digitalocean-control-plane-size
+                              :digitalocean-worker-size :digitalocean-image
+                              :digitalocean-ssh-key-fingerprint
+                              :digitalocean-vpc-cidr
+                              :digitalocean-ssh-sources
+                              :digitalocean-api-sources]
+                   :secrets [:do-token]
+                   :tofu-env {:do-token "DIGITALOCEAN_TOKEN"}
+                   :network {:mode :created :key :digitalocean-vpc-cidr}}})
+
+(def default-compute-provider
+  "The provider a deployment created before this package recorded one in its
+  compute output must be running: the only one it ever offered."
+  "digitalocean")
+
+(def spec
+  "How this package describes itself to ONCE's `compute-cluster`, the Compute
+  Cluster Standard's operations over a package-owned registry. The registry
+  and the default are the data above; `:sources` names the firewall lists
+  the template reads, both of which must list at least one CIDR; `:roles`
+  is the topology in play order — one control plane, then the workers, each
+  count a desired-state key this package separately holds at 1 — and the
+  bare `<profile>` alias points at the control plane."
+  {:registry compute-providers
+   :default default-compute-provider
+   :sources {:non-empty ["ssh-sources" "api-sources"] :may-be-empty []}
+   :roles [{:role "control-plane" :count-key :control-plane-count :count 1}
+           {:role "worker" :count-key :worker-count :count 1}]
+   :entry {:role "control-plane" :index 0}})
 
 (def providers
-  {:provider-compute
-   {"digitalocean" {:required [:digitalocean-name :digitalocean-region
-                                :digitalocean-control-plane-size
-                                :digitalocean-worker-size :digitalocean-image
-                                :digitalocean-ssh-key-fingerprint
-                                :digitalocean-vpc-cidr
-                                :digitalocean-ssh-sources
-                                :digitalocean-api-sources]
-                    :secrets [:do-token]
-                    :tofu-env {:do-token "DIGITALOCEAN_TOKEN"}}}
+  {:provider-compute compute-providers
    :provider-dns
    {"cloudflare" {:required [:cloudflare-zone :application-host]
                   :secrets [:cloudflare-api-token]
@@ -31,6 +64,12 @@
                      :r2-secret-access-key "AWS_SECRET_ACCESS_KEY"}}}})
 
 (def slots [:provider-compute :provider-dns :provider-backend])
+
+(def ^:private package-slots
+  "The slots this package selects over itself. Compute selection is ONCE's,
+  over `spec`, so a wrong `provider-compute` is reported once, in the
+  standard's words."
+  [:provider-dns :provider-backend])
 (def profile-par (green-cli/par-name :profile))
 
 (defn placeholder? [x]
@@ -69,17 +108,21 @@
    :repository-path :control-plane-count :worker-count
    :external-dns-owner-id :cert-manager-acme-environment])
 
-(defn state-errors [opts]
+(defn state-errors
+  "Every problem with desired state at once. `distinct`, because the owned
+  VPC's CIDR is both a required template key of this package's and the
+  network key ONCE's `network-errors` reports as required in the same
+  words; one message per problem."
+  [opts]
   (vec
-   (concat
+   (distinct
+    (concat
     (map #(str % " is required")
          (missing opts (concat required-keys (slot-keys opts :required))))
-    (for [slot slots
+    (for [slot package-slots
           :let [provider (get opts slot)]
           :when (not (contains? (get providers slot) provider))]
       (str "unsupported " slot " " (pr-str provider)))
-    (when-not (= "digitalocean" (:provider-compute opts))
-      [":provider-compute must be digitalocean"])
     (when-not (= "kubeadm" (:kubernetes-distribution opts))
       [":kubernetes-distribution must be kubeadm"])
     (when-not (= "flannel" (:kubernetes-cni opts))
@@ -122,21 +165,17 @@
                (not (str/ends-with? (str (:application-host opts))
                                     (str "." (:cloudflare-zone opts)))))
       [":application-host must be below :cloudflare-zone"])
-    (for [k [:kubernetes-pod-cidr :kubernetes-service-cidr
-             :digitalocean-vpc-cidr]
+    (for [k [:kubernetes-pod-cidr :kubernetes-service-cidr]
           :let [v (get opts k)]
           :when (and (not (placeholder? v)) (not (valid-cidr? v)))]
       (str k " must be a valid IPv4 CIDR"))
-    (for [k [:digitalocean-ssh-sources :digitalocean-api-sources]
-          :let [values (get opts k)]
-          :when (and (not (placeholder? values))
-                     (or (not (sequential? values))
-                         (empty? values)
-                         (some (complement valid-cidr?) values)))]
-      (str k " must be a non-empty list of IPv4 CIDRs"))
     (when-not (contains? #{"production" "staging"}
                          (:cert-manager-acme-environment opts))
-      [":cert-manager-acme-environment must be production or staging"]))))
+      [":cert-manager-acme-environment must be production or staging"])
+    ;; The Compute Cluster Standard's checks, ONCE's over `spec`: selection,
+    ;; the source lists, the provider's name rule, the owned VPC's CIDR as a
+    ;; canonical network holding every fallback address, and the topology.
+    (cluster/state-errors spec opts)))))
 
 (defn secret-errors
   ([opts] (secret-errors opts slots))

@@ -52,6 +52,8 @@ cd blue && uv run pytest
 ```
 
 Inspect golden changes before accepting them. Tests never provision resources.
-The package depends only on the SDK in every colour; the golden render guards
-its firewall, state-key, and no-rendered-secret invariants, and
-`scripts/parity.sh` is the net across colours.
+The package depends on the SDK and on ONCE in every colour — the Compute
+Cluster Standard's operations are ONCE's `compute-cluster`, called over this
+package's own registry and topology; the golden render guards its firewall,
+state-key, and no-rendered-secret invariants, and `scripts/parity.sh` is the
+net across colours.

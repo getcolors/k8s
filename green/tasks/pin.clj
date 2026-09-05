@@ -4,9 +4,10 @@
 ;; recognises exactly two forms, its unpinned birth shape and its pinned shape,
 ;; and the run fails loudly when a payload matches neither.
 ;;
-;; K8s's launchers pin only k8s. `green` comes transitively from green/deps.edn,
-;; and the red and blue SDK pins ride inside each payload beside the package
-;; pin, so this task rewrites one site per colour.
+;; K8s's launchers pin only k8s. `green` and `once` come transitively from
+;; green/deps.edn, the red and blue SDK pins ride inside each payload beside
+;; the package pin, and the red payload's ONCE pin is stamped by hand when the
+;; ONCE pin moves, so this task rewrites one site per colour.
 (defn git [& args] (let [{:keys [exit out]} (apply sh/sh "git" args)] (when (zero? exit) (str/trim out))))
 
 (defn stamp-green [s sha]
@@ -28,6 +29,11 @@
        "# [tool.uv.sources]\n"
        "# package-k8s-blue = { git = \"https://github.com/getcolors/k8s.git\", rev = \"" sha "\", subdirectory = \"blue\" }\n"
        "# blue = { git = \"https://github.com/getcolors/blue.git\", rev = \"290f313ead5ca162875c33a049c880da017eae09\" }\n"
+       "#\n"
+       ;; package-once-blue carries its own, older blue pin; the override makes
+       ;; this package's blue pin win, as it does in blue/pyproject.toml.
+       "# [tool.uv]\n"
+       "# override-dependencies = [\"blue @ git+https://github.com/getcolors/blue.git@290f313ead5ca162875c33a049c880da017eae09\"]\n"
        "# ///"))
 (defn stamp-blue [s sha]
   ;; First stamp is structural: the metadata block gains its git sources and the

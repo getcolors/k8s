@@ -1,4 +1,5 @@
 from package_k8s_blue import validate
+from package_once_blue import compute_cluster as cluster
 
 base = {
     "profile": "k8s-test", "workdir": ".colors",
@@ -57,6 +58,42 @@ def test_topology_and_cidrs_are_restricted():
     assert matching({**base, "control-plane-count": 3}, "control-plane-count")
     assert matching({**base, "digitalocean-api-sources": ["0.0.0.0/99"]},
                     "api-sources")
+
+
+def test_compute_checks_are_the_standards_in_once_words():
+    # The source lists, the owned VPC's CIDR and the selection are ONCE's
+    # checks over `spec`; the package no longer words them itself.
+    assert matching({**base, "digitalocean-api-sources": ["world"]}, "api-sources") == \
+        [':digitalocean-api-sources entry "world" is not an IPv4 or IPv6 CIDR']
+    assert matching({**base, "digitalocean-ssh-sources": []}, "ssh-sources") == \
+        [":digitalocean-ssh-sources must list at least one CIDR"]
+    assert matching({**base, "digitalocean-vpc-cidr": "10.20.0.1/20"}, "vpc-cidr") == \
+        [":digitalocean-vpc-cidr must be a canonical IPv4 network such as 10.40.0.0/24"]
+    without_cidr = {k: v for k, v in base.items() if k != "digitalocean-vpc-cidr"}
+    assert matching(without_cidr, "vpc-cidr") == [":digitalocean-vpc-cidr is required"]
+    assert matching({**base, "provider-compute": "hcloud"}, "provider-compute") == \
+        [":provider-compute must be one of digitalocean"]
+    # A created network is this package's to own: compute's DigitalOcean
+    # "must not create a VPC" refusal is filtered, never reported.
+    assert matching(base, "must be absent") == []
+
+
+def test_spec_content_is_the_two_role_topology():
+    assert cluster.spec_errors(validate.spec) == []
+    assert [r["role"] for r in validate.spec["roles"]] == ["control-plane", "worker"]
+    assert [r["count"] for r in validate.spec["roles"]] == [1, 1]
+    assert [r["count_key"] for r in validate.spec["roles"]] == \
+        ["control-plane-count", "worker-count"]
+    assert validate.spec["entry"] == {"role": "control-plane", "index": 0}
+    assert validate.spec["registry"]["digitalocean"]["network"] == \
+        {"mode": "created", "key": "digitalocean-vpc-cidr"}
+    assert validate.spec["default"] == "digitalocean"
+    assert validate.spec["sources"] == \
+        {"non_empty": ["ssh-sources", "api-sources"], "may_be_empty": []}
+    assert "fallback_subnet" not in validate.spec
+    assert cluster.topology_errors(validate.spec, base) == []
+    assert cluster.aliases(validate.spec, base) == \
+        ["k8s-test", "k8s-test-control-plane", "k8s-test-worker"]
 
 
 def test_secret_errors_use_colors_variables():

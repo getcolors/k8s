@@ -14,6 +14,7 @@ from blue.providers import tool_env
 from blue.runtime import runtime
 from blue.scaffold import PRESERVE_JINJA_DELIMITERS, content_spec, scaffold
 from blue.workflow import StepError, failed
+from package_once_blue import compute_cluster as cluster
 
 from . import utils, validate
 
@@ -64,58 +65,149 @@ def infrastructure_specs(opts: dict) -> list[dict]:
     return [spec(template("infrastructure", "main.tf"), f"{dir}/main.tf", data)]
 
 
-fallback_outputs = {
-    "digitalocean_vpc_id": "00000000-0000-0000-0000-000000000000",
-    "control_plane_public_ip": "192.168.0.10",
-    "control_plane_private_ip": "10.20.0.10",
-    "worker_public_ips": ["192.168.0.11"],
-    "worker_private_ips": ["10.20.0.11"],
-}
+# What `build` and `--dry-run` render as the VPC id: the compute stage owns
+# the real one, recorded as `params.vpc_id`.
+fallback_vpc_id = "00000000-0000-0000-0000-000000000000"
 
 
-def _output_map(result: dict) -> dict | None:
-    return result.get("k8s/outputs")
+def node_name(opts: dict, role: str, index: int) -> str:
+    """What this package calls a node — `<name>-<role>-<ordinal>`, 1-based,
+    the rule the template gives the droplets. This is the package's own
+    naming, kept over ONCE's fallback rule (Compute Cluster Standard §5,
+    adoption renames nothing), and the name the legacy translation gives a
+    node a pre-adoption state recorded without one."""
+    return f"{opts.get('digitalocean-name')}-{role}-{index + 1}"
+
+
+def nodes(opts: dict) -> list[dict]:
+    """The cluster's nodes in declared order — ONCE's `nodes` over the
+    adopted `once/cluster`: every field from state on a real run, the
+    fallbacks on a build, with their names overridden to this package's own."""
+    adopted = opts.get("once/cluster")
+    result = cluster.nodes(validate.spec, opts, adopted)
+    if adopted is None:
+        return [{**n, "name": node_name(opts, str(n["role"]), n["index"])} for n in result]
+    return result
+
+
+def entry_ip(opts: dict):
+    """The address the bare `<profile>` alias points to: the control
+    plane's, as ONCE's `ssh_config_hosts` resolves the spec's `entry`."""
+    return cluster.ssh_config_hosts(validate.spec, opts, nodes(opts))[0]["ip"]
+
+
+def _non_blank(x) -> bool:
+    return isinstance(x, str) and bool(x.strip())
+
+
+def params_errors(params: dict | None) -> list[str]:
+    """The extension key this package puts inside `params` beside ONCE's:
+    `vpc_id`, the deployment-owned VPC the cloud controller is told about. A
+    real run is refused without it."""
+    return [] if _non_blank((params or {}).get("vpc_id")) else ["compute state carries no vpc_id"]
+
+
+def _with_params_check(opts: dict) -> dict:
+    """After `resolved_cluster` or `adopt_state`: this package's
+    `params_errors` over the adopted cluster, when there is one."""
+    adopted = opts.get("once/cluster")
+    if failed(opts) or adopted is None:
+        return opts
+    errors = params_errors(adopted)
+    return {**opts, "blue/exit": 1, "blue/err": "\n".join(errors)} if errors else opts
+
+
+def legacy_params(opts: dict, outputs: dict) -> dict:
+    """The `params` a pre-adoption state describes. Before this package
+    recorded `params`, its template output a scalar control plane
+    (`control_plane_public_ip`, `control_plane_private_ip`) and two parallel
+    worker lists; this builds control-plane node 0 from the scalars and
+    worker i from the lists, names them by this package's own rule, and
+    carries `vpc_id` from `digitalocean_vpc_id`. Refused — as the SDK's
+    `StepError`, so `read_state` reports it and a delete fails closed — when
+    the two lists disagree or the VPC id is absent or blank. Nothing else
+    reads a legacy output after adoption."""
+    publics = outputs.get("worker_public_ips")
+    privates = outputs.get("worker_private_ips")
+    publics = list(publics) if isinstance(publics, (list, tuple)) else []
+    privates = list(privates) if isinstance(privates, (list, tuple)) else []
+    vpc_id = outputs.get("digitalocean_vpc_id")
+    if len(publics) != len(privates):
+        raise StepError(f"legacy state lists {len(publics)} worker public addresses and "
+                        f"{len(privates)} private addresses; refusing to guess the cluster")
+    if not _non_blank(vpc_id):
+        raise StepError("legacy state carries no digitalocean_vpc_id")
+
+    def node(index: int, role: str, ip, vpc_ip) -> dict:
+        return {"index": index, "role": role, "name": node_name(opts, role, index),
+                "ip": ip, "vpc_ip": vpc_ip, "user": "root", "sudoer": "root"}
+
+    return {"provider": "digitalocean",
+            "vpc_id": vpc_id,
+            "nodes": [node(0, "control-plane", outputs.get("control_plane_public_ip"),
+                           outputs.get("control_plane_private_ip")),
+                      *(node(i, "worker", ip, privates[i]) for i, ip in enumerate(publics))]}
+
+
+async def state_output(opts: dict) -> dict | None:
+    """The reader ONCE's `read_state` takes: the compute `params` recorded in
+    the infrastructure state, None when the state holds no outputs at all,
+    and the legacy translation above when it holds the pre-adoption outputs.
+    The stage is initialised first so remote state is reachable without
+    planning or changing cloud resources. An unreadable backend — a failed
+    init, or whatever `blue.tofu` raises — is the SDK's `StepError`, which
+    `read_state` turns into `{"error": message}`; create and delete treat
+    that differently. Looked up on this module at call time, so tests can
+    replace it."""
+    dir = tool_dir(opts, infrastructure_tool)
+    env = credential_env(opts, "provider-compute")
+    init = await runtime.exec(["tofu", f"-chdir={dir}", "init",
+                               "-input=false", "-no-color"], env=env)
+    if init.exit != 0:
+        raise StepError(f"tofu init failed: {init.err or init.out or '(no output)'}")
+    outputs = await tofu.outputs(dir, env)
+    if "params" in outputs:
+        params = outputs.get("params")
+        return params if isinstance(params, dict) else None
+    if not outputs:
+        return None
+    return legacy_params(opts, outputs)
 
 
 async def infrastructure_step(opts: dict) -> dict:
     dir = tool_dir(opts, infrastructure_tool)
     result = await tofu.tofu_with_spec(opts, infrastructure_specs(opts),
                                        dir=dir,
-                                       env=credential_env(opts, "provider-compute"),
-                                       output_key="k8s/outputs")
+                                       env=credential_env(opts, "provider-compute"))
     if failed(result):
         return result
-    if opts.get("blue/event") == "delete":
+    if opts.get("blue/event") in ("delete", "build"):
         return result
-    if opts.get("blue/event") == "build":
-        return {**result, **fallback_outputs}
-    return {**result, **fallback_outputs, **(_output_map(result) or {})}
+    # A real converge never falls back: None outputs and a partial cluster
+    # are refused by ONCE, then the VPC id by this package.
+    return _with_params_check(cluster.resolved_cluster(
+        validate.spec, opts, result, {}, cluster.output_params(result)))
 
 
 async def load_infrastructure_step(opts: dict) -> dict:
-    """Load node addresses from remote state without planning or changing
-    cloud resources."""
-    dir = tool_dir(opts, infrastructure_tool)
+    """Adopt the cluster from remote state without planning or changing
+    cloud resources: ONCE's `read_state` over `state_output`, then
+    `adopt_state`, which fails closed on an unreadable backend and refuses a
+    partial cluster, then this package's `params_errors`. A readable state
+    holding no compute leaves `once/cluster` absent, and the remote cleanup
+    skips itself."""
     rendered = {**scaffold({**opts, "blue/event": "build"}, infrastructure_specs(opts)),
                 "blue/event": opts.get("blue/event")}
-    env = credential_env(opts, "provider-compute")
-    init = await runtime.exec(["tofu", f"-chdir={dir}", "init",
-                               "-input=false", "-no-color"], env=env)
-    if init.exit != 0:
-        return process_result(rendered, "infrastructure state initialization", init)
-    try:
-        outputs = await tofu.outputs(dir, env)
-        return {**rendered, **fallback_outputs, **outputs,
-                "k8s/infrastructure-present?": "control_plane_public_ip" in outputs}
-    except Exception as error:  # noqa: BLE001 — outcome maps, not tracebacks
-        return {**rendered, "blue/exit": 1,
-                "blue/err": ("infrastructure state output failed: "
-                             + (str(error) or type(error).__name__))}
+    state = await cluster.read_state(rendered, state_output)
+    return _with_params_check(
+        cluster.adopt_state(validate.spec, rendered, str(opts.get("blue/event")), state))
 
 
 def data_fn(opts: dict) -> dict:
     """Complete deterministic template data for build as well as create."""
-    return {**fallback_outputs, **opts,
+    adopted = opts.get("once/cluster") or {}
+    return {**opts,
+            "digitalocean_vpc_id": adopted.get("vpc_id") or fallback_vpc_id,
             "host-alias": utils.host_alias(opts),
             "kubernetes-minor": utils.kubernetes_minor(opts.get("kubernetes-version")),
             "kubernetes-package-version":
@@ -171,22 +263,21 @@ def _pretty(value, indent=0):
 
 
 def inventory(opts: dict) -> str:
-    """JSON inventory separating the control plane from the workers."""
-    data = data_fn(opts)
-    cp_name = f"{data.get('digitalocean-name')}-control-plane-1"
-    workers = {f"{data.get('digitalocean-name')}-worker-{index + 1}":
-               {"ansible_host": public, "ansible_user": "root",
-                "private_ip": private}
-               for index, (public, private)
-               in enumerate(zip(data.get("worker_public_ips") or [],
-                                data.get("worker_private_ips") or []))}
+    """The remote play's inventory: the control plane and the workers, each
+    node under its own name, from `nodes`."""
+    all_nodes = nodes(opts)
+
+    def host(n: dict) -> dict:
+        return {"ansible_host": n.get("ip"), "ansible_user": n.get("user"),
+                "private_ip": n.get("vpc_ip")}
+
+    def hosts(role: str) -> dict:
+        return dict(sorted((n["name"], host(n)) for n in all_nodes if n.get("role") == role))
+
     return _pretty(
         {"all": {"children": {
-            "control_plane": {"hosts": {
-                cp_name: {"ansible_host": data.get("control_plane_public_ip"),
-                          "ansible_user": "root",
-                          "private_ip": data.get("control_plane_private_ip")}}},
-            "workers": {"hosts": dict(sorted(workers.items()))},
+            "control_plane": {"hosts": hosts("control-plane")},
+            "workers": {"hosts": hosts("worker")},
             "k8s_cluster": {"children": {"control_plane": {}, "workers": {}}}}}})
 
 
@@ -208,7 +299,7 @@ async def ansible_local_step(opts: dict) -> dict:
         inventory="inventory.ini",
         playbooks={"create": "main.yml", "delete": "main.yml"},
         extra_vars={"host_alias": data["host-alias"],
-                    "ip": data.get("control_plane_public_ip"),
+                    "ip": entry_ip(opts),
                     "block_state": "absent" if delete else "present"})
 
 
@@ -219,12 +310,15 @@ def ansible_remote_specs(opts: dict) -> list[dict]:
             spec(template("ansible-remote", "create.yml"), f"{dir}/create.yml", data),
             spec(template("ansible-remote", "delete.yml"), f"{dir}/delete.yml", data),
             spec(template("ansible-remote", "gitops.yml"), f"{dir}/gitops.yml", data),
-            raw_spec(f"{dir}/inventory.json", inventory(data))]
+            raw_spec(f"{dir}/inventory.json", inventory(opts))]
 
 
 async def ansible_remote_step(opts: dict) -> dict:
-    if (opts.get("blue/event") == "delete"
-            and opts.get("k8s/infrastructure-present?") is False):
+    """The remote play. On a delete it addresses the adopted cluster; a
+    state that recorded no compute — the nodes are already gone — has
+    nothing to clean up, and the step skips itself rather than render the
+    fallbacks."""
+    if opts.get("blue/event") == "delete" and opts.get("once/cluster") is None:
         return opts
     dir = tool_dir(opts, ansible_remote_tool)
     return await ansible_with_spec(

@@ -3,10 +3,11 @@
 
 import { readPars, parName } from "red/cli";
 import * as dryRun from "red/dry-run";
-import { preflight } from "red/lifecycle";
+import { preflight, type PreflightContext } from "red/lifecycle";
 import * as progress from "red/progress";
 import * as tofu from "red/tofu";
 import { adviceAdd, workflow, type Opts, type WireDecl } from "red/workflow";
+import { compute, computeCluster } from "package-once-red";
 import * as tools from "./tools.ts";
 import * as validate from "./validate.ts";
 
@@ -28,20 +29,41 @@ export const defaults: Opts = {
 
 const lifecycleEvents = ["create", "delete"];
 
+// A real create or delete: the two events that touch the provider.
+const lifecycleEvent = ({ event, real }: PreflightContext): boolean =>
+  Boolean(real && lifecycleEvents.includes(String(event)));
+
 // Overlay credentials, validate, and guard real destruction.
+//
+// The compute state is read up front, on the same defaulted and overlaid opts
+// the validators see — the overlay is what carries the backend credentials —
+// and only for the two events that touch the provider, so the Compute Provider
+// Standard's §4 check runs before the credentials: a recorded provider that
+// differs from the selected one reports the actionable error, not a missing
+// token. On a create an unreadable backend counts as no state (a fresh clone
+// has none); a delete adopts the cluster in its own first step and fails
+// closed there. The reader is injectable so tests never shell out to tofu.
 export async function startStep(
   opts: Opts,
   env: Record<string, string | undefined> = process.env,
+  reader: compute.StateReader = tools.stateOutput,
 ): Promise<Opts> {
+  const overlaid = readPars({ ...defaults, ...opts }, env);
+  const context: PreflightContext = {
+    event: typeof overlaid["red/event"] === "string" ? overlaid["red/event"] as string : undefined,
+    real: !overlaid["red/dry-run"],
+  };
+  const state = lifecycleEvent(context) ? await computeCluster.readState(overlaid, reader) : {};
   return preflight(opts, {
     defaults,
     overlay: readPars,
     validators: [
       (_opts, environment) => validate.envErrors(environment),
       (current) => validate.stateErrors(current),
-      (current, _environment, { event, real }) =>
-        real && lifecycleEvents.includes(String(event))
-          ? validate.secretErrors(current)
+      (current, _environment, ctx) =>
+        lifecycleEvent(ctx)
+          ? computeCluster.providerValidator(validate.spec, current, state.params,
+                                             () => validate.secretErrors(current))
           : [],
       (current, _environment, { event, real }) =>
         real && event === "delete" && current["compute-prevent-destroy"]
