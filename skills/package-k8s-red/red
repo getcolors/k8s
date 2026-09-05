@@ -36,7 +36,7 @@ import { homedir } from "node:os";
 // directory, which would halt Bun's upward resolution of `package-k8s-red`
 // and break the development symlink at red/red.
 const PINS = {
-  "package-k8s-red": "github:getcolors/k8s#740b20468e4cc473742d9e6661b5e0d7037c28f4",
+  "package-k8s-red": "github:getcolors/k8s#08be4a03049c1723644c82c78b40d02b0dc69ab1",
   "package-once-red": "github:getcolors/once#b1628b7f8546c10fa9b768565bfd839512cb49ca",
   "red": "github:getcolors/red#db9bfe61282e2093f4098bf5a6ee0cd10added6e",
 };
