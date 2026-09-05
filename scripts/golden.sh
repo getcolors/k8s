@@ -116,7 +116,8 @@ checks() {
   # The application is pruned and its records withdrawn before the controllers
   # go, or the application host outlives the cluster.
   grep -q 'delete kustomization apps' "$delete"
-  grep -q "action=DELETE record=hello.fixture.example" "$delete" || { echo "golden: $profile: the delete does not wait for the DNS withdrawal" >&2; exit 1; }
+  grep -q "dig +short A hello.fixture.example" "$delete" || { echo "golden: $profile: the delete does not wait for the DNS withdrawal" >&2; exit 1; }
+  grep -q "dig +short NS fixture.example" "$delete"
 
   local acceptance="$base/k8s-acceptance/acceptance.sh"
   grep -q 'expected exactly two Kubernetes nodes' "$acceptance"

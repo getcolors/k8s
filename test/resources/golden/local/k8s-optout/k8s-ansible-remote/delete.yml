@@ -16,43 +16,12 @@
     # the application host outlive the cluster, pointing at a load balancer
     # that no longer exists (seen live on 2026-09-05).
     #
-    # Fail closed, not open: an ingress for the host with no external-dns to
-    # withdraw it stops the delete, because destroying the cluster then would
-    # leave the records behind for good. With no ingress there is nothing to
-    # withdraw (a create that never reached the application), and the delete
-    # proceeds.
-    - name: Find the ingress for hello.fixture.example
-      ansible.builtin.shell: >-
-        kubectl --kubeconfig=/etc/kubernetes/admin.conf get ingress -A
-        -o jsonpath='{range .items[*]}{.spec.rules[*].host}{"\n"}{end}'
-        | grep -x 'hello.fixture.example'
-      register: k8s_app_ingress
-      changed_when: false
-      failed_when: false
-
-    - name: Check whether external-dns is running
-      ansible.builtin.command: >-
-        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n external-dns
-        get deployment external-dns-external-dns -o name
-      register: k8s_external_dns
-      changed_when: false
-      failed_when: false
-
-    - name: Refuse to destroy a cluster whose records nothing can withdraw
-      ansible.builtin.fail:
-        msg: >-
-          hello.fixture.example still has an ingress but external-dns is not
-          running, so its DNS records cannot be withdrawn; reconcile the
-          controllers (flux) or remove the records by hand, then retry the delete
-      when: k8s_app_ingress.rc == 0 and k8s_external_dns.rc != 0
-
-    # The withdrawal is looked for only after this instant, so a log line
-    # from an earlier delete cycle cannot stand in for the current one.
-    - name: Mark the moment before the application is pruned
-      ansible.builtin.command: date -u +%Y-%m-%dT%H:%M:%SZ
-      register: k8s_prune_started
-      changed_when: false
-
+    # The gate is the zone's own answer, not the controller's log and not
+    # the ingress: on a retry after a failed withdrawal the ingress is already
+    # gone while the record may not be, and a log line proves nothing about
+    # the zone. The zone's authoritative nameservers are asked directly, so
+    # no resolver cache stands between the check and the truth; a record that
+    # persists past the wait fails the delete closed, whatever the reason.
     - name: Delete the application Kustomization so external-dns withdraws its records
       ansible.builtin.command: >-
         kubectl --kubeconfig=/etc/kubernetes/admin.conf -n flux-system
@@ -60,18 +29,21 @@
         --wait=true --timeout=600s
       changed_when: true
 
-    - name: Wait for external-dns to withdraw hello.fixture.example
-      ansible.builtin.shell: >-
-        kubectl --kubeconfig=/etc/kubernetes/admin.conf -n external-dns
-        logs deployment/external-dns-external-dns
-        --since-time={{ k8s_prune_started.stdout }}
-        | grep -q 'action=DELETE record=hello.fixture.example '
+    - name: Wait until the zone's nameservers no longer answer for hello.fixture.example
+      ansible.builtin.shell: |
+        set -o pipefail
+        command -v dig >/dev/null || apt-get install -y -o DPkg::Lock::Timeout=300 bind9-dnsutils >/dev/null
+        ns=$(dig +short NS fixture.example @1.1.1.1 | head -1)
+        [ -n "$ns" ] || { echo "no nameserver found for fixture.example"; exit 2; }
+        answer=$(dig +short A hello.fixture.example @"$ns")
+        [ -z "$answer" ] || { echo "hello.fixture.example still answers $answer at $ns"; exit 1; }
+      args:
+        executable: /bin/bash
       register: k8s_dns_withdrawn
       until: k8s_dns_withdrawn.rc == 0
       retries: 30
       delay: 10
       changed_when: false
-      when: k8s_app_ingress.rc == 0
 
     - name: Delete the GitOps Kustomization and prune its inventory
       ansible.builtin.command: >-
